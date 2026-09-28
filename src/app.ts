@@ -64,7 +64,9 @@ export async function startApp(root: HTMLElement): Promise<void> {
   ui.setLoading("Starting the simulation");
   const sim = await Simulation.create(device, grid, { dt: DT_MS });
   const ecg = await Ecg.create(device, sim, { positions: electrodePositions(frame) });
-  const renderer = await Renderer.create(ui.heartCanvas, device, surface, grid, sim, { quality: pickQuality() });
+  // The frame stands the heart up by its real anatomy (apex down, right ventricle on the left). Without it the renderer would
+  // guess the axis from the shape of the muscle, which is 69 degrees off for this heart.
+  const renderer = await Renderer.create(ui.heartCanvas, device, surface, grid, sim, { quality: pickQuality(), frame });
   const monitor = new Monitor(ui.monitorCanvas);
 
   // One ECG sample after every chunk and every stimulus; the readback happens once per frame.

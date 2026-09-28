@@ -75,7 +75,7 @@ Measured on one Apple-silicon Mac, with nothing else using the graphics card. Ot
 | Fibrillation | about 5 separate wavefronts on average, up to 11 at once, still going after 5 seconds |
 | Shock | ended both rhythms in every test run |
 | Shipped | 9 MB of data (a 2 MB demo clip among it), 149 KB of code (50 KB compressed), no server |
-| Tests | 294 unit tests and 135 browser tests in real Chrome on a real GPU, all passing; the page tests also pass against the live site |
+| Tests | 295 unit tests and 135 browser tests in real Chrome on a real GPU, all passing; the page tests also pass against the live site |
 
 The browser tests need a real graphics card, and one of them measures speed, so run them one at a time (the config does) and
 with nothing else busy on the GPU.

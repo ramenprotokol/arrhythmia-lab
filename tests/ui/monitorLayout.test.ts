@@ -89,7 +89,7 @@ describe("twelve-lead layout", () => {
     for (const b of twelve().boxes) expect(Math.abs(b.baseline - (b.y + b.h / 2))).toBeLessThanOrEqual(0.5);
   });
 
-  it("uses the same 10 mm per mV gain in every box, on a whole number of pixels per mm", () => {
+  it("uses one fixed gain in every box (5 mm/mV for the twelve small rows, 10 for the single lead), on a whole number of pixels per mm", () => {
     for (const [w, h, dpr] of [
       [1200, 700, 1],
       [1440, 900, 2],
@@ -97,11 +97,26 @@ describe("twelve-lead layout", () => {
     ] as const) {
       const l = twelve(w, h, dpr);
       expect(Number.isInteger(l.pxPerMm)).toBe(true);
-      expect(l.pxPerMv).toBe(10 * l.pxPerMm);
+      expect(l.gainMmPerMv).toBe(l.mode === "twelve" ? 5 : 10);
+      expect(l.pxPerMv).toBe(l.gainMmPerMv * l.pxPerMm);
       expect(l.pxPerMm).toBeGreaterThanOrEqual(2);
       // one millivolt (10 mm) is a good part of a row but leaves room either side
       const row = l.boxes[0].h;
       expect(l.pxPerMv).toBeLessThan(row * 0.5);
+    }
+  });
+
+  it("leaves room in a twelve-lead row for a 2.4 mV swing either way, so a racing rhythm is not cut flat", () => {
+    for (const [w, h, dpr] of [
+      [1200, 700, 1],
+      [1440, 900, 2],
+      [860, 500, 1],
+    ] as const) {
+      const l = twelve(w, h, dpr);
+      for (const b of l.boxes) {
+        const half = b.h / 2;
+        expect(2.4 * l.pxPerMv, `${b.id} at ${w}x${h}@${dpr}`).toBeLessThanOrEqual(half);
+      }
     }
   });
 

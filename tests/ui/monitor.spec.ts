@@ -52,7 +52,7 @@ test("draws every lead and the rhythm strip after 6 seconds, and clear() empties
   expect(r.afterClear.count).toBe(0);
 });
 
-test("uses a fixed gain of 10 mm per mV and clips each trace to its own box", async ({ page }) => {
+test("uses a fixed gain (5 mm per mV in the twelve-lead layout) and clips each trace to its own box", async ({ page }) => {
   await open(page);
   const r = await page.evaluate(async () => {
     const { ui } = window;
@@ -64,7 +64,7 @@ test("uses a fixed gain of 10 mm per mV and clips each trace to its own box", as
     leads[1] = 1; // lead II: one millivolt
     leads[2] = -0.5; // lead III: minus half a millivolt
     leads[10] = 0; // V5: flat
-    leads[11] = 3; // V6: three millivolts, far enough up to reach into V5's box if it were not clipped
+    leads[11] = 6; // V6: six millivolts, far enough up to reach into V5's box if it were not clipped
     for (let t = 0; t < 1000; t += 4) m.push(t, leads);
     m.render();
     const shot = ui.grab(canvas);
@@ -83,6 +83,7 @@ test("uses a fixed gain of 10 mm per mV and clips each trace to its own box", as
     return {
       pxPerMm: layout.pxPerMm,
       pxPerMv: layout.pxPerMv,
+      gainMmPerMv: layout.gainMmPerMv,
       I: centre("I"),
       II: centre("II"),
       III: centre("III"),
@@ -92,8 +93,8 @@ test("uses a fixed gain of 10 mm per mV and clips each trace to its own box", as
       V6Changed: ui.diff(empty, shot, [V6.x, V6.y, V6.w, V6.h]).count,
     };
   });
-  expect(r.pxPerMv).toBe(10 * r.pxPerMm);
-  // an amplitude of v mV puts the trace v * 10 mm above the zero line
+  expect(r.pxPerMv).toBe(r.gainMmPerMv * r.pxPerMm);
+  // an amplitude of v mV puts the trace v * gain mm above the zero line
   for (const [name, mv] of [["I", 0.5], ["II", 1], ["III", -0.5]] as const) {
     const c = r[name];
     expect(c.total, `${name} drawn`).toBeGreaterThan(50);

@@ -6,8 +6,12 @@ export const LEAD_NAMES = ["I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V
 
 export type MonitorMode = "twelve" | "single";
 
-/** Fixed gain, as on an ECG printout: 10 mm of paper per millivolt. */
-export const GAIN_MM_PER_MV = 10;
+/**
+ * Fixed gain, as on an ECG printout, in mm of paper per millivolt. The single big lead uses the standard 10. The twelve
+ * small rows use the half-standard 5, which printouts use for large voltages: a racing or fibrillating rhythm swings the
+ * chest leads by 2 mV or more, and at 10 that would be cut flat at the edge of a 47 px row.
+ */
+export const GAIN_MM_PER_MV: Record<MonitorMode, number> = { twelve: 5, single: 10 };
 
 const COLUMNS = 4;
 /** The standard clinical arrangement, by lead index: I aVR V1 V4 / II aVL V2 V5 / III aVF V3 V6. */
@@ -51,6 +55,8 @@ export type MonitorLayout = {
   /** The strip under the boxes that holds the "Simulated" notice. */
   footer: { x: number; y: number; w: number; h: number };
   pxPerMm: number;
+  /** The gain in mm of paper per millivolt for this mode (5 or 10). */
+  gainMmPerMv: number;
   pxPerMv: number;
   /** Simulated milliseconds per pixel, the same in every box. */
   msPerPx: number;
@@ -100,7 +106,8 @@ export function computeLayout(o: { mode: MonitorMode; width: number; height: num
     gutter: { x: margin, w: gutterW },
     footer: { x: x0, y: margin + rows * rowH, w: plotW, h: footerH },
     pxPerMm,
-    pxPerMv: GAIN_MM_PER_MV * pxPerMm,
+    gainMmPerMv: GAIN_MM_PER_MV[mode],
+    pxPerMv: GAIN_MM_PER_MV[mode] * pxPerMm,
     msPerPx: windowMs / plotW,
   };
 }

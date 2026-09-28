@@ -92,7 +92,7 @@ function paintFooter(ctx: CanvasRenderingContext2D, footer: { x: number; y: numb
   ctx.font = `500 ${10.5 * dpr}px ${FONT}`;
   ctx.fillStyle = INK.note;
   ctx.textAlign = "left";
-  ctx.fillText(`10 mm/mV  ·  ${windowMs / 1000} s window`, footer.x, y);
+  ctx.fillText(`${layout.gainMmPerMv} mm/mV  ·  ${windowMs / 1000} s window`, footer.x, y);
   ctx.textAlign = "right";
   ctx.fillText(NOTICE, footer.x + footer.w, y);
   ctx.textAlign = "left";

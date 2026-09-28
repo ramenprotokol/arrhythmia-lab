@@ -52,7 +52,7 @@ const DESCRIPTION: Record<MonitorMode, string> = {
   twelve:
     "Live traces from the simulated heart: the twelve standard ECG leads (I, II, III, aVR, aVL, aVF and V1 to V6) " +
     "in three rows of four, with a long lead II rhythm strip along the bottom. Traces sweep from left to right and " +
-    "are redrawn as new data arrives. The gain is fixed at 10 millimetres per millivolt. Simulated. Not a medical device.",
+    "are redrawn as new data arrives. The gain is fixed at 5 millimetres per millivolt, half the standard, so large swings fit. Simulated. Not a medical device.",
   single:
     "Live trace of lead II from the simulated heart, sweeping from left to right and redrawn as new data arrives. " +
     "The gain is fixed at 10 millimetres per millivolt. Simulated. Not a medical device.",

@@ -23,13 +23,13 @@ arr[..., 2] += glow * 44
 bg = Image.fromarray(np.clip(arr, 0, 255).astype("uint8"))
 
 # the heart, cropped tight to where it is, with a soft edge so it melts into the background
-heart = heart_full.crop((250, 10, 790, 570))
-scale = 600 / heart.height
-heart = heart.resize((int(heart.width * scale), 600), Image.LANCZOS)
+heart = heart_full.crop((235, 15, 835, 570))
+scale = 545 / heart.height
+heart = heart.resize((int(heart.width * scale), 545), Image.LANCZOS)
 mask = Image.new("L", heart.size, 0)
 ImageDraw.Draw(mask).rounded_rectangle((22, 22, heart.width - 22, heart.height - 22), radius=110, fill=255)
 mask = mask.filter(ImageFilter.GaussianBlur(30))
-bg.paste(heart, (W - heart.width - 30, 15), mask)
+bg.paste(heart, (W - heart.width - 16, 50), mask)
 
 # the chest leads of the ECG, from the README screenshot
 ecg = shot.crop((548, 640, 1032, 830))
@@ -51,7 +51,7 @@ draw = ImageDraw.Draw(bg)
 draw.text((62, 62), "ARRHYTHMIA", font=font(78, True), fill=(232, 242, 246))
 draw.text((62, 144), "LAB", font=font(78, True), fill=(87, 224, 255))
 draw.text((64, 254), "A live heart you can break, and fix.", font=font(31), fill=(190, 214, 224))
-draw.text((64, 312), "Real 3D heart  |  live 12-lead ECG  |  runs on your GPU  |  free", font=font(19), fill=(140, 170, 182))
+draw.text((64, 312), "Real 3D heart  |  live 12-lead ECG  |  on your GPU  |  free", font=font(19), fill=(140, 170, 182))
 draw.text((64, 350), "Educational simulation. Not a medical device.", font=font(19), fill=(255, 205, 140))
 bg.save(out_path, optimize=True)
 print("wrote", out_path, bg.size)
