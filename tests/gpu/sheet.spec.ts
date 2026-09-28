@@ -1,4 +1,10 @@
 import { test, expect, type Page } from "@playwright/test";
+
+test.afterEach(async ({ page }) => {
+  // A shader or pipeline error does not throw, it makes the GPU do nothing. Fail on any.
+  const errors = await page.evaluate(() => window.gpuErrors ?? []);
+  expect(errors).toEqual([]);
+});
 import { CpuSheet } from "./cpuSheet";
 
 const N = 64, D = 0.1, DX = 0.5, DT = 0.05;
