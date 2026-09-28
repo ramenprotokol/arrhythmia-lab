@@ -12,10 +12,15 @@ export class CpuSheet {
   ) {
     this.cells = Array.from({ length: n * n }, () => restingCell());
   }
-  stimulate(cx: number, cy: number, r: number): void {
-    for (let y = 0; y < this.n; y++)
-      for (let x = 0; x < this.n; x++)
-        if (Math.hypot(x - cx, y - cy) <= r) this.cells[y * this.n + x].u = 1;
+  /** Same pulse as the GPU: add amp*dt to u in the disc, then step, for ms/dt steps. */
+  stimulate(cx: number, cy: number, r: number, amp = 2, ms = 2): void {
+    const count = Math.ceil(ms / this.dt);
+    for (let s = 0; s < count; s++) {
+      for (let y = 0; y < this.n; y++)
+        for (let x = 0; x < this.n; x++)
+          if (Math.hypot(x - cx, y - cy) <= r) this.cells[y * this.n + x].u += amp * this.dt;
+      this.step(1);
+    }
   }
   step(steps: number): void {
     const { n, D, dx, dt, p } = this;

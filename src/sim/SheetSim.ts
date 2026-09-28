@@ -12,9 +12,14 @@ export interface SheetOptions {
   params?: Params;
 }
 
+/** Default stimulus: 2 u/ms for 2 ms, strong enough to capture resting tissue. */
+const STIM_AMP = 2;
+const STIM_MS = 2;
+
 // 2D sheet of cardiac tissue on the GPU. State per cell is (u, v, w, s), stored as vec4<f32>.
 export class SheetSim {
   private readonly n: number;
+  private readonly dt: number;
   private readonly device: GPUDevice;
   private readonly cellBytes: number;
   private readonly bufs: [GPUBuffer, GPUBuffer];
@@ -34,6 +39,7 @@ export class SheetSim {
     }
     this.device = device;
     this.n = n;
+    this.dt = dt;
     this.groups = Math.ceil(n / 8);
     this.cellBytes = n * n * 16;
 
@@ -101,11 +107,48 @@ export class SheetSim {
     this.device.queue.submit([enc.finish()]);
   }
 
-  private apply(mode: 0 | 1, cx: number, cy: number, r: number): void {
+  private writeApply(mode: 0 | 1 | 2, cx: number, cy: number, r: number, x1: number, y1: number, add: number): void {
     const data = new ArrayBuffer(32);
     new Uint32Array(data, 0, 2).set([this.n, mode]);
-    new Float32Array(data, 8, 3).set([cx, cy, r]);
+    new Float32Array(data, 8, 6).set([cx, cy, r, x1, y1, add]);
     this.device.queue.writeBuffer(this.applyUniform, 0, data);
+  }
+
+  /** Inject a current pulse: each time step adds `amp` u/ms to the chosen cells, then steps. */
+  private pulse(mode: 0 | 2, cx: number, cy: number, r: number, x1: number, y1: number, amp: number, ms: number): void {
+    this.writeApply(mode, cx, cy, r, x1, y1, amp * this.dt);
+    const count = Math.ceil(ms / this.dt);
+    const enc = this.device.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    for (let s = 0; s < count; s++) {
+      pass.setPipeline(this.applyPipeline);
+      pass.setBindGroup(0, this.applyBinds[this.current]);
+      pass.dispatchWorkgroups(this.groups, this.groups);
+      pass.setPipeline(this.stepPipeline);
+      pass.setBindGroup(0, this.stepBinds[this.current]);
+      pass.dispatchWorkgroups(this.groups, this.groups);
+      this.current = 1 - this.current;
+    }
+    pass.end();
+    this.device.queue.submit([enc.finish()]);
+  }
+
+  /**
+   * Stimulate a disc centred on cell (x, y), radius in cells, with a current pulse.
+   * The pulse also advances the simulation by `ms`, because the tissue keeps evolving during it.
+   */
+  stimulate(x: number, y: number, r: number, opts: { amp?: number; ms?: number } = {}): void {
+    this.pulse(0, x, y, r, 0, 0, opts.amp ?? STIM_AMP, opts.ms ?? STIM_MS);
+  }
+
+  /** The same current pulse on every cell in the rectangle from (x0, y0) to (x1, y1), corners included. */
+  stimulateRect(x0: number, y0: number, x1: number, y1: number, opts: { amp?: number; ms?: number } = {}): void {
+    this.pulse(2, x0, y0, 0, x1, y1, opts.amp ?? STIM_AMP, opts.ms ?? STIM_MS);
+  }
+
+  /** Reset every cell to rest, as a defibrillation shock does. */
+  shock(): void {
+    this.writeApply(1, 0, 0, 0, 0, 0, 0);
     const enc = this.device.createCommandEncoder();
     const pass = enc.beginComputePass();
     pass.setPipeline(this.applyPipeline);
@@ -113,16 +156,6 @@ export class SheetSim {
     pass.dispatchWorkgroups(this.groups, this.groups);
     pass.end();
     this.device.queue.submit([enc.finish()]);
-  }
-
-  /** Push the voltage above threshold inside a disc, centred on cell (x, y), radius in cells. */
-  stimulate(x: number, y: number, r: number): void {
-    this.apply(0, x, y, r);
-  }
-
-  /** Reset every cell to rest, as a defibrillation shock does. */
-  shock(): void {
-    this.apply(1, 0, 0, 0);
   }
 
   /** All four state variables per cell, interleaved (u, v, w, s). */

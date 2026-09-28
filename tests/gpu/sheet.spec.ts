@@ -70,3 +70,63 @@ test("shock returns the whole sheet to rest", async ({ page }) => {
   });
   expect(maxU).toBe(0);
 });
+
+// Cross-field protocol: a plane wave (S1) from the left edge, then a second stimulus (S2) on the
+// lower-left block. Found by exploration (see docs/receipts.md): with a shortened recovery
+// (tauWp x 0.35, action potential about 125 ms) and D = 0.05, S2 before about 190 ms is absorbed
+// because the tissue is still refractory, and S2 after that starts a wave that keeps circling.
+async function crossField(page: Page, t2: number, tail: number[]): Promise<number[]> {
+  return page.evaluate(async ({ t2, tail }) => {
+    const N = 160, DT = 0.05;
+    const params = { ...window.lab.EPI, tauWp: window.lab.EPI.tauWp * 0.35 };
+    const sim = new window.lab.SheetSim(window.lab.device, N, { D: 0.05, dx: 0.5, dt: DT, params });
+    sim.stimulateRect(0, 0, 3, N - 1);
+    sim.step(Math.round(t2 / DT));
+    sim.stimulateRect(0, 0, N / 2, N / 2, { amp: 0.4 });
+    const out: number[] = [];
+    let prev = 0;
+    for (const ms of tail) {
+      sim.step(Math.round((ms - prev) / DT));
+      prev = ms;
+      const u = await sim.readU();
+      out.push(u.reduce((a, x) => a + (x > 0.5 ? 1 : 0), 0) / u.length);
+    }
+    return out;
+  }, { t2, tail });
+}
+
+test("a second stimulus during the refractory period is absorbed", async ({ page }) => {
+  await open(page);
+  const f = await crossField(page, 150, [3000]);
+  expect(f[0]).toBe(0);
+});
+
+test("a second stimulus after recovery starts a wave that keeps circling", async ({ page }) => {
+  await open(page);
+  const f = await crossField(page, 220, [4000, 8000]);
+  // A rotating wave has about half the sheet excited at any moment: it is still there at 8 s.
+  for (const x of f) {
+    expect(x).toBeGreaterThan(0.2);
+    expect(x).toBeLessThan(0.7);
+  }
+});
+
+test("a shock ends a wave that is circling", async ({ page }) => {
+  await open(page);
+  const after = await page.evaluate(async () => {
+    const N = 160, DT = 0.05;
+    const params = { ...window.lab.EPI, tauWp: window.lab.EPI.tauWp * 0.35 };
+    const sim = new window.lab.SheetSim(window.lab.device, N, { D: 0.05, dx: 0.5, dt: DT, params });
+    sim.stimulateRect(0, 0, 3, N - 1);
+    sim.step(Math.round(220 / DT));
+    sim.stimulateRect(0, 0, N / 2, N / 2, { amp: 0.4 });
+    sim.step(Math.round(4000 / DT));
+    const before = (await sim.readU()).reduce((a, x) => a + (x > 0.5 ? 1 : 0), 0);
+    sim.shock();
+    sim.step(Math.round(2000 / DT));
+    const u = await sim.readU();
+    return { before, after: u.reduce((a, x) => a + (x > 0.5 ? 1 : 0), 0) };
+  });
+  expect(after.before).toBeGreaterThan(1000); // it really was circling
+  expect(after.after).toBe(0); // and the shock ended it for good
+});

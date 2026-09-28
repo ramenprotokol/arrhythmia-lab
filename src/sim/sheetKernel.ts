@@ -61,11 +61,14 @@ fn step(@builtin(global_invocation_id) gid: vec3<u32>) {
   dst[i] = vec4<f32>(u + S.dt * du, v + S.dt * dv, w + S.dt * dw, s + S.dt * ds);
 }
 
-struct Apply { n: u32, mode: u32, cx: f32, cy: f32, r: f32, pad0: f32, pad1: f32, pad2: f32 };
+struct Apply { n: u32, mode: u32, cx: f32, cy: f32, r: f32, x1: f32, y1: f32, add: f32 };
 @group(0) @binding(4) var<uniform> A: Apply;
 @group(0) @binding(5) var<storage, read_write> state: array<vec4<f32>>;
 
-// mode 0: stimulate a disc (u jumps above threshold). mode 1: shock (everything back to rest).
+// mode 0: add the current step of a stimulus to a disc: u += add. Cells that cannot fire
+//         (refractory) do not, which is what makes a vulnerable window exist.
+// mode 1: shock (everything back to rest).
+// mode 2: the same current, on the rectangle from (cx, cy) to (x1, y1), corners included.
 @compute @workgroup_size(8, 8)
 fn apply(@builtin(global_invocation_id) gid: vec3<u32>) {
   let n = A.n;
@@ -75,11 +78,20 @@ fn apply(@builtin(global_invocation_id) gid: vec3<u32>) {
     state[i] = vec4<f32>(0.0, 1.0, 1.0, 0.0);
     return;
   }
+  if (A.mode == 2u) {
+    let fx = f32(gid.x); let fy = f32(gid.y);
+    if (fx >= A.cx && fx <= A.x1 && fy >= A.cy && fy <= A.y1) {
+      var c = state[i];
+      c.x = c.x + A.add;
+      state[i] = c;
+    }
+    return;
+  }
   let dx = f32(gid.x) - A.cx;
   let dy = f32(gid.y) - A.cy;
   if (sqrt(dx * dx + dy * dy) <= A.r) {
     var c = state[i];
-    c.x = 1.0;
+    c.x = c.x + A.add;
     state[i] = c;
   }
 }
