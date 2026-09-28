@@ -1,5 +1,5 @@
 // Takes the README screenshot and the social-preview image from the real page. Not a test: a build tool,
-// skipped unless MAKE_SHOTS=1. Writes docs/screenshot.png and public/og.png.
+// skipped unless MAKE_SHOTS=1. Writes docs/screenshot.png and a clean heart-only shot (SHOT_DIR); the social image is composed from it (see docs/demo.md).
 import { test } from "@playwright/test";
 import "../app/labHandle";
 
@@ -22,8 +22,7 @@ test("screenshots for the README and the social preview", async ({ page }) => {
   await page.waitForFunction(() => window.__lab.engine.inducer.state.status === "success", undefined, { timeout: 60_000 });
   await page.waitForTimeout(5000);
   await page.screenshot({ path: "docs/screenshot.png" });
-  // the social preview: 1200 x 630, the same scene
-  await page.setViewportSize({ width: 1200, height: 630 });
-  await page.waitForTimeout(1500);
-  await page.screenshot({ path: "public/og.png" });
+  // the heart alone, with the captions, labels and hint hidden, for the social image
+  await page.evaluate(() => document.querySelectorAll(".hint, .banner, .brand, .labels, .hud").forEach((e) => ((e as HTMLElement).style.visibility = "hidden")));
+  await page.screenshot({ path: `${process.env.SHOT_DIR ?? "test-results/screens"}/heart-clean.png`, clip: { x: 0, y: 0, width: 1036, height: 570 } });
 });

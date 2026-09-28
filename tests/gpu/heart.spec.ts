@@ -308,9 +308,10 @@ test("the real heart runs fast enough for a live view", async ({ page }) => {
   // If the solver gets half of every 60 fps frame (8.3 ms), it can do 8.3 / perStep steps of 0.05 ms.
   const simMsPerSecond = 60 * (8.3 / perStep) * 0.05;
   console.log(`real heart: ${perStep.toFixed(4)} ms per step; at half a frame per frame that is ${simMsPerSecond.toFixed(0)} simulated ms per real second (${(simMsPerSecond / 1000).toFixed(2)}x real time)`);
-  // A teaching view is best slowed down. Require at least 0.4x real time, so a heartbeat of about
-  // 800 ms plays in under 2 seconds. Measured on this machine: 0.0345 ms per step.
-  expect(simMsPerSecond).toBeGreaterThan(400);
+  // A teaching view is best slowed down, so it only has to be well above slow motion. Measured on an Apple-silicon
+  // Mac with nothing else on the GPU: 0.034 ms per step, 730 simulated ms per second. The floor is 250 so that a
+  // slower or shared GPU does not fail the suite, while a real regression (a 3x slowdown) still does.
+  expect(simMsPerSecond).toBeGreaterThan(250);
 });
 
 test("excitedFraction counts on the GPU exactly what a full readback would count", async ({ page }) => {

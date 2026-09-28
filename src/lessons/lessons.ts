@@ -53,7 +53,7 @@ const pausePacemaker = (api: LabApi) => api.setPacemaker(false);
 
 const HINT_TIMER = "This step carries on by itself. Press Skip to move on.";
 const HINT_TIMINGS =
-  "The lab is trying a few different timings for the early beat until one takes, because the exact moment matters. If it does not start, press Skip.";
+  "The lab is trying a few different timings for the early beat until one takes on this computer, because the exact moment matters. If it does not start, press Skip.";
 const HINT_BURSTS = "The lab is trying a few different bursts until one takes. If nothing starts, press Skip.";
 const HINT_STILL_GOING = "If the glow fades away, the wave did not keep going. Press Skip to carry on.";
 const PACEMAKER_NOTE = "We have paused the pacemaker, the part that fires a steady beat";
@@ -240,7 +240,7 @@ const fibrillation: Lesson = {
       },
     },
     {
-      title: "Even shorter waves",
+      title: "Shorter still",
       text:
         "We lowered both sliders much further, so the waves are shorter than before. " +
         "With a shorter wave there is room for several of them in the heart at once. " +
@@ -307,7 +307,7 @@ const shockIt: Lesson = {
       title: "Shock",
       text: "Now press the amber Shock button, or the S key. It resets every cell at once.",
       // the viewer does it: the step moves on once everything has gone quiet
-      waitFor: always,
+      waitFor: settled,
       hint: "Press the amber Shock button on the right. Skip only moves the lesson on; it does not shock the heart.",
     },
     {

@@ -11,3 +11,10 @@ ffmpeg -y -i test-results/demo/demo-raw.webm -an -c:v libvpx-vp9 -b:v 0 -crf 38 
 # mp4 for social posts (X does not take webm):
 ffmpeg -y -i test-results/demo/demo-raw.webm -an -c:v libx264 -pix_fmt yuv420p -crf 20 -movflags +faststart demo.mp4
 ```
+
+## The screenshot and the social image
+
+```sh
+SHOT_DIR=/tmp/shots MAKE_SHOTS=1 npx playwright test tests/tools/screenshots.spec.ts   # docs/screenshot.png + heart-clean.png
+python3 tools/make_og.py /tmp/shots/heart-clean.png docs/screenshot.png public/og.png  # the 1200 x 630 link preview
+```

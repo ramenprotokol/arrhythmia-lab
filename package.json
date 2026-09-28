@@ -23,5 +23,23 @@
     "typescript-eslint": "^8.71.0",
     "vite": "^8.3.1",
     "vitest": "^5.0.2"
-  }
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ramenprotokol/arrhythmia-lab.git"
+  },
+  "homepage": "https://github.com/ramenprotokol/arrhythmia-lab",
+  "keywords": [
+    "webgpu",
+    "cardiology",
+    "ecg",
+    "simulation",
+    "medical-education",
+    "spiral-waves",
+    "wgsl",
+    "typescript"
+  ]
 }

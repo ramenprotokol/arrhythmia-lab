@@ -618,3 +618,96 @@ test("recording through a paused composite: it runs only during the take, and th
   const { statSync } = await import("node:fs");
   expect(statSync(await file.path()).size).toBeGreaterThan(2000);
 });
+
+test("crop and fit keep the source's proportions: contain fits it all inside, cover fills and trims, stretch distorts", async ({ page }) => {
+  await open(page);
+  const r = await page.evaluate(async () => {
+    const { ui } = window;
+    const { createComposite } = await ui.loadRecorder();
+    type Layer = Parameters<typeof createComposite>[1][number];
+
+    // a 100 x 50 picture: red left half, blue right half, and a white 10 x 10 square in the middle
+    const source = document.createElement("canvas");
+    source.width = 100;
+    source.height = 50;
+    const s = source.getContext("2d") as CanvasRenderingContext2D;
+    s.fillStyle = "#f00";
+    s.fillRect(0, 0, 50, 50);
+    s.fillStyle = "#00f";
+    s.fillRect(50, 0, 50, 50);
+    s.fillStyle = "#fff";
+    s.fillRect(45, 20, 10, 10);
+
+    const paint = (size: { width: number; height: number }, extra: Partial<Layer>) => {
+      const composite = createComposite(size, [{ source, rect: [0, 0, size.width, size.height], ...extra }], { paused: true });
+      composite.draw();
+      return composite;
+    };
+    const scan = (canvas: HTMLCanvasElement, test: (r: number, g: number, b: number) => boolean) => {
+      const { width, height } = canvas;
+      const data = (canvas.getContext("2d", { willReadFrequently: true }) as CanvasRenderingContext2D).getImageData(0, 0, width, height).data;
+      let left = Infinity, right = -1, top = Infinity, bottom = -1;
+      for (let y = 0; y < height; y++)
+        for (let x = 0; x < width; x++) {
+          const i = 4 * (y * width + x);
+          if (!test(data[i], data[i + 1], data[i + 2])) continue;
+          left = Math.min(left, x);
+          right = Math.max(right, x);
+          top = Math.min(top, y);
+          bottom = Math.max(bottom, y);
+        }
+      return right < 0 ? null : { left, top, w: right - left + 1, h: bottom - top + 1 };
+    };
+    const picture = (c: HTMLCanvasElement) => scan(c, (r, g, b) => Math.abs(r - 5) + Math.abs(g - 10) + Math.abs(b - 12) > 60); // anything but the background
+    const marker = (c: HTMLCanvasElement) => scan(c, (r, g, b) => r > 200 && g > 200 && b > 200);
+    const pixel = (c: HTMLCanvasElement, x: number, y: number) => Array.from((c.getContext("2d", { willReadFrequently: true }) as CanvasRenderingContext2D).getImageData(x, y, 1, 1).data).slice(0, 3);
+    const square = { width: 200, height: 200 };
+
+    const contain = paint(square, { fit: "contain" });
+    const cover = paint(square, { fit: "cover" });
+    const stretch = paint(square, { fit: "stretch" });
+    const halfCrop = paint(square, { crop: [0, 0, 50, 50] });
+    const containCrop = paint({ width: 200, height: 100 }, { crop: [0, 0, 50, 50], fit: "contain" });
+
+    // a crop given as a function is asked again on every draw
+    let view: [number, number, number, number] = [0, 0, 50, 50];
+    const moving = createComposite(square, [{ source, rect: [0, 0, 200, 200], crop: () => view }], { paused: true });
+    moving.draw();
+    const first = pixel(moving.canvas, 100, 100);
+    view = [50, 0, 50, 50];
+    moving.draw();
+    const second = pixel(moving.canvas, 100, 100);
+
+    return {
+      contain: { picture: picture(contain.canvas), marker: marker(contain.canvas) },
+      cover: { picture: picture(cover.canvas), marker: marker(cover.canvas), left: pixel(cover.canvas, 20, 100), right: pixel(cover.canvas, 180, 100) },
+      stretch: { marker: marker(stretch.canvas) },
+      halfCrop: { corner: pixel(halfCrop.canvas, 5, 5), far: pixel(halfCrop.canvas, 195, 195) },
+      containCrop: { picture: picture(containCrop.canvas), inside: pixel(containCrop.canvas, 100, 50), bar: pixel(containCrop.canvas, 10, 50) },
+      first,
+      second,
+    };
+  });
+  const near = (a: number | undefined, b: number, slack = 3) => Math.abs((a ?? Infinity) - b) <= slack;
+  // contain: 100 x 50 into 200 x 200 is drawn at 2x, so 200 x 100, centred, with bars above and below; the 10 px square stays square (20 x 20)
+  expect(r.contain.picture).not.toBeNull();
+  expect([r.contain.picture?.left, r.contain.picture?.top, r.contain.picture?.w, r.contain.picture?.h].map((v, i) => near(v, [0, 50, 200, 100][i], 1))).toEqual([true, true, true, true]);
+  expect(near(r.contain.marker?.w, 20) && near(r.contain.marker?.h, 20)).toBe(true);
+  // cover: it fills the whole rectangle (4x, trimmed to the middle half of the picture), and the square is 40 x 40
+  expect([r.cover.picture?.left, r.cover.picture?.top, r.cover.picture?.w, r.cover.picture?.h]).toEqual([0, 0, 200, 200]);
+  expect(near(r.cover.marker?.w, 40) && near(r.cover.marker?.h, 40)).toBe(true);
+  expect(r.cover.left[0]).toBeGreaterThan(200); // red on the left of what is left of the picture
+  expect(r.cover.right[2]).toBeGreaterThan(200); // blue on the right
+  // stretch: 2x across and 4x down, so the square is distorted to 20 x 40
+  expect(near(r.stretch.marker?.w, 20) && near(r.stretch.marker?.h, 40)).toBe(true);
+  // crop: the left half of the picture only, and a crop function is read again on every draw
+  expect(r.halfCrop.corner[0]).toBeGreaterThan(200);
+  expect(r.halfCrop.far[0]).toBeGreaterThan(200);
+  expect(r.halfCrop.far[2]).toBeLessThan(60);
+  expect(r.first[0]).toBeGreaterThan(200);
+  expect(r.second[2]).toBeGreaterThan(200);
+  // crop and contain together: a 50 x 50 piece into 200 x 100 is 100 x 100, centred, with bars left and right
+  expect([r.containCrop.picture?.left, r.containCrop.picture?.top, r.containCrop.picture?.w, r.containCrop.picture?.h].map((v, i) => near(v, [50, 0, 100, 100][i], 1))).toEqual([true, true, true, true]);
+  expect(r.containCrop.inside[0]).toBeGreaterThan(200);
+  expect(r.containCrop.bar).toEqual([5, 10, 12]);
+});
