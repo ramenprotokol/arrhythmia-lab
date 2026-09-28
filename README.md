@@ -112,9 +112,16 @@ The heart data and recorded ECGs in `public/data/` are already processed. To reb
 
 ## Built with Claude Sonnet 5.5
 
-The design, the code and the tests were written by Claude Sonnet 5.5 (released 28 September 2026), directed by a person, in one day.
-`docs/receipts.md` is the build log: what was done, in what order, what went wrong, and the measured numbers. It is not affiliated with,
-endorsed by or sponsored by Anthropic.
+Claude Sonnet 5.5 (released 28 September 2026) wrote the design specification, the implementation plan, all of the code and
+all of the tests, in one day, directed by a person. Some of the work was split across helper agents, all running Sonnet 5.5,
+and every helper's output was re-checked by the lead session before it was kept.
+
+Two things came from elsewhere, and the build log says so: the idea and the launch research were done first, in a session
+running on Opus 5.5 before the switch to Sonnet, and Opus 5.5 was asked one question later (what effort level to use for the
+hardest part). It gave no code.
+
+`docs/receipts.md` is the build log: what was done, in what order, what went wrong, and the measured numbers. This project is not
+affiliated with, endorsed by or sponsored by Anthropic.
 
 ## Credits and licences
 

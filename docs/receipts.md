@@ -2,6 +2,20 @@
 
 Backs the claim "designed, built and tested by Claude Sonnet 5.5". One line per task.
 
+## Who did what (read this first)
+
+- **Idea and research (Opus 5.5 session, before the switch to Sonnet):** three research agents (launch-day tactics on X, Sonnet 5.5
+  launch facts, medical-app ideas) and the choice of "Arrhythmia Lab" from six concepts. No product code was written in that phase.
+- **Design spec, implementation plan, every line of code, every test (Sonnet 5.5):** the main session, plus helper agents that ran
+  on Sonnet 5.5 (cell model, heart data, ECG samples, heart frame and ECG, renderer, ECG monitor and lessons). The lead session
+  re-ran and re-read each helper's work before committing it.
+- **One Opus 5.5 consultation, on effort level only:** "stay at high, max only for the 3D diffusion design". No code. It also named the
+  edge-of-tissue trap that the conservation test then proved.
+- **The person** chose the idea, the scope (the full version first), the engine (WebGPU only), the features, the free-tier-only rule, and
+  ran everything from the terminal.
+
+## Log
+
 - 2026-09-28 13:58 design approved by owner, spec written, plan written (Sonnet 5.5, main session)
 - 2026-09-28 13:59 Task 1 done: scaffold, WebGPU check, headless GPU test. Finding: headless GPU needs installed Google Chrome (channel "chrome") and an https origin (navigator.gpu is absent on about:blank). (Sonnet 5.5, main session)
 - 2026-09-28 14:00 Task 9 step 1 done: orbit camera maths with 6 passing tests (Sonnet 5.5, main session). Tasks 2, 3, 12 handed to three Sonnet 5.5 subagents.
