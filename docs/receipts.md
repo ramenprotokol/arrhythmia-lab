@@ -7,3 +7,4 @@ Backs the claim "designed, built and tested by Claude Sonnet 5.5". One line per 
 - 2026-09-28 14:00 Task 9 step 1 done: orbit camera maths with 6 passing tests (Sonnet 5.5, main session). Tasks 2, 3, 12 handed to three Sonnet 5.5 subagents.
 - 2026-09-28 14:02 Task 2 done by Sonnet 5.5 subagent (task2-model), re-verified by the main session: 10/10 tests, constants verified against the 2008 paper Table 1, 1 Hz APD90 EPI 269 / ENDO 263 / MID 414 ms vs paper 269 / 260 / 410.
 - 2026-09-28 14:09 Task 12 data done by Sonnet 5.5 subagent (task12-ecg), re-verified by the main session: 4 real traces (PTB-XL x2, MIT-BIH x2), 33 KB, 7/7 tests. Credits must name both PTB-XL and MIT-BIH.
+- 2026-09-28 14:11 Task 3 done by Sonnet 5.5 subagent (task3-data), re-verified by the main session: real Strocchi heart 23 (EnSight Gold format), 125x106x117 grid at 1 mm, 182,253 muscle voxels, fibres unit length, shipped data 7.2 MB, 18/18 data tests.

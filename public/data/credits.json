@@ -1,0 +1,25 @@
+{
+  "title": "A Publicly Available Virtual Cohort of Four-chamber Heart Meshes for Cardiac Electro-mechanics Simulations",
+  "authors": [
+    "Strocchi, Marina",
+    "Augustin, Christoph M.",
+    "Gsell, Matthias A. F.",
+    "Karabelas, Elias",
+    "Neic, Aurel",
+    "Gillette, Karli",
+    "Razeghi, Orod",
+    "Prassl, Anton J.",
+    "Vigmond, Edward J.",
+    "Behar, Jonathan M.",
+    "Gould, Justin S.",
+    "Sidhu, Baldeep",
+    "Rinaldi, Christopher A.",
+    "Bishop, Martin J.",
+    "Plank, Gernot",
+    "Niederer, Steven A."
+  ],
+  "licence": "CC BY 4.0",
+  "url": "https://zenodo.org/records/3890034",
+  "doi": "https://doi.org/10.5281/zenodo.3890034",
+  "note": "One heart (archive 23.tar.gz), ventricles only, resampled to a coarse voxel grid and smoothed surface by the tools in this repository."
+}
