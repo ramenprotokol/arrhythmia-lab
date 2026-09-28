@@ -9,3 +9,4 @@ Backs the claim "designed, built and tested by Claude Sonnet 5.5". One line per 
 - 2026-09-28 14:09 Task 12 data done by Sonnet 5.5 subagent (task12-ecg), re-verified by the main session: 4 real traces (PTB-XL x2, MIT-BIH x2), 33 KB, 7/7 tests. Credits must name both PTB-XL and MIT-BIH.
 - 2026-09-28 14:11 Task 3 done by Sonnet 5.5 subagent (task3-data), re-verified by the main session: real Strocchi heart 23 (EnSight Gold format), 125x106x117 grid at 1 mm, 182,253 muscle voxels, fibres unit length, shipped data 7.2 MB, 18/18 data tests.
 - 2026-09-28 14:11 Task 4 done: heart loader, 7 tests incl. the real shipped files (Sonnet 5.5, main session).
+- 2026-09-28 14:13 Advice (not code): asked Opus 5.5 only whether to raise effort. Answer: stay at high, max only for the Task 6 3D diffusion design and for any bug surviving two fix attempts; flagged the boundary-flux trap, now in the plan. All code and design remain Sonnet 5.5.
