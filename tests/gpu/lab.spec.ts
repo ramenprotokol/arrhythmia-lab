@@ -141,3 +141,27 @@ test("a shock ends the rhythm, and with the pacemaker on the normal rhythm retur
   }
   expect(r.beats).toBeGreaterThanOrEqual(3); // 5 s after the pacemaker restarts: at least three regular beats
 });
+
+test("the inducer works while the pacemaker is beating, and again and again", async ({ page }) => {
+  test.setTimeout(400_000);
+  await open(page);
+  const r = await run(page, `
+    e.pacemaker = true;            // the lab boots with the pacemaker on, so start with beats already running
+    e.nextBeat = e.simTime + 100;
+    await run(2500);
+    const out = [];
+    for (const kind of ["tachycardia", "fibrillation", "tachycardia", "fibrillation", "tachycardia"]) {
+      e.induce(kind);
+      await run(60000, async () => { if (e.inducer.state.status !== "running") throw new Error("done"); }).catch(() => undefined);
+      const st = { ...e.inducer.state };
+      await run(2000);
+      out.push({ kind, status: st.status, attempt: st.attempt, alive: e.excited });
+    }
+    return out;
+  `);
+  console.log("repeat inductions:", JSON.stringify(r));
+  for (const x of r) {
+    expect(x.status, x.kind).toBe("success");
+    expect(x.alive, x.kind).toBeGreaterThan(0.02);
+  }
+});

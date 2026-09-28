@@ -5,7 +5,7 @@ import { Inducer, type InduceHost, type Plan } from "../../src/lab/induce";
 function fakeLab(takes: (attemptNumber: number) => boolean) {
   const log: string[] = [];
   let now = 0;
-  let attempt = 0;
+  let attempt = -1; // the shock that clears the heart when induction starts brings this to 0
   let excited = 0;
   const host: InduceHost = {
     simTimeMs: () => now,
@@ -53,9 +53,9 @@ describe("Inducer", () => {
     run(lab, inducer);
     expect(inducer.state.status).toBe("success");
     expect(inducer.state.attempt).toBe(1);
-    expect(lab.log.slice(0, 3)).toEqual(["pacemaker false", "tissue 0.7/0.3", "apex@400"]);
+    expect(lab.log.slice(0, 4)).toEqual(["pacemaker false", "shock@0", "tissue 0.7/0.3", "apex@400"]);
     expect(lab.log).toContain("extra@652"); // the first chunk boundary at or after 400 + 250, 4 ms grid
-    expect(lab.log.some((l) => l.startsWith("shock"))).toBe(false); // a success is never shocked away
+    expect(lab.log.filter((l) => l.startsWith("shock")).length).toBe(1); // only the reset at the start: a success is never shocked away
   });
 
   it("shocks a failed attempt back to rest and tries the next timing", () => {
@@ -65,7 +65,7 @@ describe("Inducer", () => {
     run(lab, inducer);
     expect(inducer.state.status).toBe("success");
     expect(inducer.state.attempt).toBe(3);
-    expect(lab.log.filter((l) => l.startsWith("shock")).length).toBe(2);
+    expect(lab.log.filter((l) => l.startsWith("shock")).length).toBe(3); // the reset at the start, then two failed attempts
     expect(lab.log.filter((l) => l.startsWith("extra")).length).toBe(3);
   });
 
@@ -76,7 +76,7 @@ describe("Inducer", () => {
     run(lab, inducer);
     expect(inducer.state.status).toBe("failed");
     expect(inducer.state.attempts).toBe(3);
-    expect(lab.log.filter((l) => l.startsWith("shock")).length).toBe(3);
+    expect(lab.log.filter((l) => l.startsWith("shock")).length).toBe(4); // the reset, then three failed attempts
   });
 
   it("can be cancelled, and does nothing more afterwards", () => {

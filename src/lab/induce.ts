@@ -69,6 +69,7 @@ export class Inducer {
     this.attempt = 0;
     this.status = "running";
     this.host.setPacemaker(false);
+    this.host.shock(); // start from a heart at rest: a wave already running would spoil the first attempt
     this.host.setTissue(this.plan.tissue);
     this.begin();
     this.emit();
