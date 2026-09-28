@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
-    "test:gpu": "playwright test"
+    "test:gpu": "playwright test",
+    "test:live": "playwright test -c playwright.live.config.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
