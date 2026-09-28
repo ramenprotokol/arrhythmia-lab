@@ -75,7 +75,7 @@ Measured on one Apple-silicon Mac, with nothing else using the graphics card. Ot
 | Fibrillation | about 5 separate wavefronts on average, up to 11 at once, still going after 5 seconds |
 | Shock | ended both rhythms in every test run |
 | Shipped | 9 MB of data (a 2 MB demo clip among it), 149 KB of code (50 KB compressed), no server |
-| Tests | 294 unit tests and 134 browser tests in real Chrome on a real GPU, all passing |
+| Tests | 294 unit tests and 135 browser tests in real Chrome on a real GPU, all passing; the page tests also pass against the live site |
 
 The browser tests need a real graphics card, and one of them measures speed, so run them one at a time (the config does) and
 with nothing else busy on the GPU.
@@ -89,6 +89,7 @@ npm test             # 100% CPU: the model, the data, the lessons, the engine, t
 npm run test:gpu     # real Chrome and a real GPU; start the dev server first on port 5199:
                      #   npx vite --port 5199 --strictPort
 npm run build        # a static site in dist/
+npm run test:live    # the page tests against the deployed site (LIVE_URL=... to point elsewhere)
 ```
 
 The heart data and recorded ECGs in `public/data/` are already processed. To rebuild them from the sources, see
