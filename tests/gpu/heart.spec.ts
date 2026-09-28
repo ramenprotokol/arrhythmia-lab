@@ -9,7 +9,7 @@ import { CpuHeart } from "./cpuHeart";
 import { jaggedGrid, mulberry32, muscleCount } from "./synthGrid";
 import { readFileSync } from "node:fs";
 import { parseHeart } from "../../src/data/loadHeart";
-import { heartShape } from "./heartGeometry";
+import { APEX } from "./frame";
 
 async function open(page: Page) {
   await page.goto("/tests/gpu/harness.html");
@@ -263,8 +263,6 @@ test("the real heart keeps its total voltage constant with no stimulus", async (
 
 test("a stimulus at the apex activates the whole real heart in a plausible time", async ({ page }) => {
   await open(page);
-  const grid = realGrid();
-  const shape = heartShape(grid);
   const r = await page.evaluate(async ({ apex }) => {
     const g = await window.lab.loadHeart("/data/heart.bin");
     const sim = await window.lab.Simulation.create(window.lab.device, g, { dt: 0.05, reaction: true });
@@ -285,7 +283,7 @@ test("a stimulus at the apex activates the whole real heart in a plausible time"
       if (marks[0.99] !== undefined) break;
     }
     return marks;
-  }, { apex: shape.apex });
+  }, { apex: APEX });
   console.log(`real heart: half of the muscle fired by ${r[0.5]} ms, 99% by ${r[0.99]} ms`);
   expect(r[0.99]).toBeDefined();
   expect(r[0.5]).toBeGreaterThanOrEqual(60);
@@ -313,4 +311,25 @@ test("the real heart runs fast enough for a live view", async ({ page }) => {
   // A teaching view is best slowed down. Require at least 0.4x real time, so a heartbeat of about
   // 800 ms plays in under 2 seconds. Measured on this machine: 0.0345 ms per step.
   expect(simMsPerSecond).toBeGreaterThan(400);
+});
+
+test("excitedFraction counts on the GPU exactly what a full readback would count", async ({ page }) => {
+  await open(page);
+  const r = await page.evaluate(async ({ apex }) => {
+    const g = await window.lab.loadHeart("/data/heart.bin");
+    const sim = await window.lab.Simulation.create(window.lab.device, g, { dt: 0.1, reaction: true });
+    const before = await sim.excitedFraction();
+    sim.stimulate(apex as [number, number, number], 3);
+    sim.step(100);
+    const gpu = await sim.excitedFraction();
+    const cpu = window.lab.regionStats(await sim.readU(), g).fraction;
+    sim.step(400);
+    const late = await sim.excitedFraction();
+    return { before, gpu, cpu, late };
+  }, { apex: APEX });
+  console.log(`excited fraction: before ${r.before}, GPU ${r.gpu.toFixed(5)} vs full readback ${r.cpu.toFixed(5)}, after 500 ms ${r.late}`);
+  expect(r.before).toBe(0);
+  expect(r.gpu).toBeGreaterThan(0.05);
+  expect(Math.abs(r.gpu - r.cpu)).toBeLessThan(1e-6);
+  expect(r.late).toBeLessThan(0.01);
 });

@@ -169,4 +169,13 @@ fn apply(@builtin(global_invocation_id) gid: vec3<u32>) {
   let d = vec3<f32>(f32(x) - A.cx, f32(y) - A.cy, f32(z) - A.cz);
   if (dot(d, d) <= A.r2) { curU[idx] = curU[idx] + A.add; }
 }
+@group(0) @binding(9) var<storage, read_write> counter: array<atomic<u32>, 1>;
+
+// Counts the muscle voxels whose voltage is above 0.5 (excited). Reads the current voltage buffer.
+@compute @workgroup_size(64)
+fn countExcited(@builtin(global_invocation_id) gid: vec3<u32>) {
+  if (gid.x >= S.count) { return; }
+  let idx = muscle[gid.x];
+  if (srcU[idx] > 0.5) { atomicAdd(&counter[0], 1u); }
+}
 `;

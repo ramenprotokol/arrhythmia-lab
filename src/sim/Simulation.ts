@@ -44,6 +44,9 @@ export class Simulation {
   private readonly applyPipeline: GPUComputePipeline;
   private readonly stepBinds: [GPUBindGroup, GPUBindGroup];
   private readonly applyBinds: [GPUBindGroup, GPUBindGroup];
+  private readonly countPipeline: GPUComputePipeline;
+  private readonly countBinds: [GPUBindGroup, GPUBindGroup];
+  private readonly bufCounter: GPUBuffer;
   private current = 0;
   private readonly groups: number;
   private readonly paddedCells: number;
@@ -106,6 +109,8 @@ export class Simulation {
     };
     const bufCells = make(cells, storage);
     const bufActive = make(active, storage);
+    this.bufCellsRef = bufCells;
+    this.bufMuscleRef = bufActive;
     const uUsage = storage | GPUBufferUsage.COPY_SRC;
     this.bufU = [
       device.createBuffer({ size: this.paddedCells * 4, usage: uUsage }),
@@ -156,6 +161,20 @@ export class Simulation {
         ],
       });
     this.applyBinds = [applyBind(0), applyBind(1)];
+
+    this.countPipeline = device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "countExcited" } });
+    this.bufCounter = device.createBuffer({ size: 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+    const countBind = (i: 0 | 1) =>
+      device.createBindGroup({
+        layout: this.countPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 1, resource: { buffer: this.bufSim } },
+          { binding: 3, resource: { buffer: bufActive } },
+          { binding: 4, resource: { buffer: this.bufU[i] } },
+          { binding: 9, resource: { buffer: this.bufCounter } },
+        ],
+      });
+    this.countBinds = [countBind(0), countBind(1)];
   }
 
   /** Explicit diffusion is stable while dt <= h^2 / (6 D), with D the largest coefficient. */
@@ -286,6 +305,27 @@ export class Simulation {
     return out;
   }
 
+  /**
+   * The fraction of muscle voxels that are excited (voltage above 0.5), counted on the GPU so the
+   * whole volume never has to be read back. Only 4 bytes cross to the CPU.
+   */
+  async excitedFraction(): Promise<number> {
+    this.device.queue.writeBuffer(this.bufCounter, 0, new Uint32Array([0, 0, 0, 0]));
+    const staging = this.device.createBuffer({ size: 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const enc = this.device.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(this.countPipeline);
+    pass.setBindGroup(0, this.countBinds[this.current]);
+    pass.dispatchWorkgroups(this.groups);
+    pass.end();
+    enc.copyBufferToBuffer(this.bufCounter, 0, staging, 0, 16);
+    this.device.queue.submit([enc.finish()]);
+    await staging.mapAsync(GPUMapMode.READ);
+    const n = new Uint32Array(staging.getMappedRange().slice(0))[0];
+    staging.destroy();
+    return n / this.count;
+  }
+
   /** Voltage per voxel in the original (unpadded) layout. */
   async readU(): Promise<Float32Array> {
     const { nx, ny, nz, sx, sy } = this.layout;
@@ -312,5 +352,28 @@ export class Simulation {
           out[3 * i + 2] = padded[4 * p + 2];
         }
     return out;
+  }
+
+  // ---- read-only accessors for src/ecg: the ECG kernel reads the same buffers the solver uses -----------
+  private readonly bufCellsRef: GPUBuffer;
+  private readonly bufMuscleRef: GPUBuffer;
+
+  /** Tissue and fibre, one u32 per padded voxel: tissue | fx << 8 | fy << 16 | fz << 24 (fibre int8, scaled by 127). */
+  cellsBuffer(): GPUBuffer {
+    return this.bufCellsRef;
+  }
+
+  /** Padded linear index of every muscle voxel, muscleCount() entries. */
+  muscleBuffer(): GPUBuffer {
+    return this.bufMuscleRef;
+  }
+
+  muscleCount(): number {
+    return this.count;
+  }
+
+  /** The diffusion coefficients in force now, mm^2 per ms, already multiplied by the conduction setting. */
+  diffusion(): { dPar: number; dPerp: number } {
+    return { dPar: this.dPar * this.conduction, dPerp: this.dPerp * this.conduction };
   }
 }

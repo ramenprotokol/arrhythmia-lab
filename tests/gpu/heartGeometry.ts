@@ -1,18 +1,19 @@
 // Geometry helpers for the real heart grid (test use only).
+//
+// WARNING: `apex` and `base` here are only the two ends of the long axis, and which end is which is a GUESS
+// (the end with less muscle in its slab). On the shipped heart that guess picks the WRONG end: the true apex is
+// voxel (119, 19, 23), read from public/data/heart-frame.json, which is built from the source labels. Use
+// tests/gpu/frame.ts for anything that must be anatomically correct.
 import type { HeartGrid } from "../../src/data/loadHeart";
 
 export interface HeartShape {
   centroid: [number, number, number];
-  axis: [number, number, number]; // unit long axis, pointing from the base toward the apex
-  apex: [number, number, number]; // the muscle voxel farthest toward the apex end
-  base: [number, number, number]; // the muscle voxel farthest toward the base end
+  axis: [number, number, number]; // unit long axis (direction is a guess, see the warning above)
+  apex: [number, number, number]; // one end of the long axis (may really be the base)
+  base: [number, number, number]; // the other end
   lengthMm: number;
 }
 
-/**
- * Long axis by power iteration on the covariance of the muscle voxels. The apex end is the narrower
- * end: it has less muscle in a slab of the same thickness.
- */
 export function heartShape(g: HeartGrid): HeartShape {
   const pts: [number, number, number][] = [];
   for (let z = 0; z < g.nz; z++)
@@ -42,7 +43,6 @@ export function heartShape(g: HeartGrid): HeartShape {
   const slab = (hi - lo) * 0.15;
   const nLow = proj.filter((t) => t < lo + slab).length;
   const nHigh = proj.filter((t) => t > hi - slab).length;
-  // the end with less muscle in its slab is the apex
   const apexIsHigh = nHigh < nLow;
   const axis: [number, number, number] = apexIsHigh ? v : [-v[0], -v[1], -v[2]];
   const p2 = proj.map((t) => (apexIsHigh ? t : -t));

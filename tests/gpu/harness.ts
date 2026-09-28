@@ -4,6 +4,9 @@ import { EPI } from "../../src/model/params";
 import { Simulation } from "../../src/sim/Simulation";
 import { loadHeart } from "../../src/data/loadHeart";
 import { blockGrid, jaggedGrid } from "./synthGrid";
+import { runScenario, regionStats } from "./scenario";
+import * as recipes from "../../src/lessons/recipes";
+import { LabEngine } from "../../src/lab/engine";
 
 declare global {
   interface Window {
@@ -15,6 +18,10 @@ declare global {
       loadHeart: typeof loadHeart;
       blockGrid: typeof blockGrid;
       jaggedGrid: typeof jaggedGrid;
+      runScenario: typeof runScenario;
+      regionStats: typeof regionStats;
+      recipes: typeof recipes;
+      LabEngine: typeof LabEngine;
     };
     labReady: Promise<void>;
     gpuErrors: string[];
@@ -29,5 +36,5 @@ window.labReady = (async () => {
   const device = await adapter.requestDevice();
   // Any GPU error the page does not catch is recorded, and the tests fail if there is one.
   device.addEventListener("uncapturederror", (e) => window.gpuErrors.push((e as GPUUncapturedErrorEvent).error.message));
-  window.lab = { SheetSim, Simulation, EPI, device, loadHeart, blockGrid, jaggedGrid };
+  window.lab = { SheetSim, Simulation, EPI, device, loadHeart, blockGrid, jaggedGrid, runScenario, regionStats, recipes, LabEngine };
 })();

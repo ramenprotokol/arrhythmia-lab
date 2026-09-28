@@ -2,7 +2,7 @@ import { defineConfig } from "@playwright/test";
 
 // GPU tests run in real Chromium with WebGPU switched on.
 export default defineConfig({
-  testDir: "tests/gpu",
+  testDir: "tests",
   testMatch: /.*\.spec\.ts/,
   timeout: 120_000,
   webServer: {
