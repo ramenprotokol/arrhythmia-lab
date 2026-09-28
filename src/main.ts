@@ -1,3 +1,4 @@
+import "./style.css";
 import { showFallback } from "./fallback";
 
 export async function hasWebGPU(): Promise<boolean> {
@@ -16,7 +17,14 @@ async function boot(): Promise<void> {
     showFallback(root);
     return;
   }
-  root.textContent = "WebGPU ready.";
+  try {
+    // The whole lab is loaded only when the browser can run it, so the fallback page stays tiny.
+    const { startApp } = await import("./app");
+    await startApp(root);
+  } catch (err) {
+    console.error(err);
+    showFallback(root, err instanceof Error ? err.message : String(err));
+  }
 }
 
 void boot();
