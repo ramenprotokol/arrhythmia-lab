@@ -194,3 +194,33 @@ work out what is wrong and fix it. The person also asked to judge the product on
   42 passed in 3.7 minutes, no policy violation and no console error.
 - Left alone on purpose: a failure after the page's resize listener is attached would leave that listener running on a page that already says the lab could not
   start. The only known way to get there was F1.
+
+## Who wrote how much (counted 2026-09-29)
+
+How it was counted: the lead session went through the build's own records (kept privately, not published) and counted every line written by a file edit or
+by a file written from the shell, for the lead and for every helper agent, in both working sessions. A file's final lines are shared between the models in
+proportion to the lines each one wrote to it. Lines are not value, and the count is approximate: 187 lines (small test-tuning files) could not be traced and
+are left out. Only code files are counted (`.ts .tsx .js .mjs .wgsl .css .html .sh .py`).
+
+| Code | Lines | Sonnet 5.5 | Opus 5.5 |
+|---|---|---|---|
+| All code, tests included | 28,724 | 69% | 31% |
+| App source (`src/`) | 13,929 | 56% | 44% |
+| Tests | 13,438 | 83% | 17% |
+| Tools (`tools/`) | 1,265 | 62% | 38% |
+| All code except tests | 15,286 | 57% | 43% |
+
+Work done, measured differently: the output tokens of the lead and of every helper over the whole launch (including the research and the video) were
+Sonnet 5.5 80%, Opus 5.5 20%, Fable 5.1 under 1%.
+
+Where the split falls (Opus 5.5's share of each area's final lines):
+
+- No Opus lines at all: the cell model and simulation (`src/model`, `src/sim`), the ECG (`src/ecg`), the heart sounds and the rhythm analyser (`src/audio`),
+  and the break-and-fix moves (`src/lab`). This is the engine, and it is all Sonnet 5.5.
+- Mostly Opus 5.5: the renderer (`src/render`, 61%), the page shell (`src/dom.ts` 70%, `src/style.css` 79%), the page's wiring in `src/app.ts` (70%: the
+  interface agent rewrote most of it around the lead's parts) and every word the page says (`src/copy.ts`, 99%). The interface parts in `src/ui` are 39%
+  Opus and the lessons 36%.
+- The idea and the launch research were Opus 5.5. The security review was Fable 5.1, which wrote no code.
+
+The launch video is not in this repository. Sonnet 5.5 built it; about 40% of its code was adapted from an earlier showcase video that was made with
+Opus 5.5, and an Opus 5.5 helper did its finishing pass (a music fix, the mastering, and camera and text fixes: under 10% of its code).

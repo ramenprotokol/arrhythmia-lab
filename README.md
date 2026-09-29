@@ -169,14 +169,20 @@ It gave no code.
 
 **Round 2 (the evening of the same day).** The person looked at the first version and said the heart was not realistic enough,
 the interface was confusing, and it had no sound. The lead session (Sonnet 5.5) wrote the rhythm analyser and the heart sounds,
-the break-it and fix-it moves, the beat sweep, the whole-heart shock, the page wiring and the tests. Three specialist agents
-running Opus 5.5 did the rest: one rebuilt the interface, one rebuilt the renderer, and one audited the lab as a cardiology
-teacher, rewrote every word the page says about the heart, and read this README for medical accuracy.
+the break-it and fix-it moves, the beat sweep, the whole-heart shock, the wiring for those parts and most of the tests. Three
+specialist agents running Opus 5.5 did the rest: one rebuilt the interface (and most of the page shell and the rest of
+`src/app.ts` with it), one rebuilt the renderer, and one audited the lab as a cardiology teacher, rewrote every word the page
+says about the heart, and read this README for medical accuracy.
 
 **Round 3 (29 September 2026).** Claude Fable 5.1 read the project for security and code problems without changing anything,
 and found nothing above Low: six small bugs, two suggestions for the medical wording, and some notes on the security headers.
 A helper running Sonnet 5.5 fixed all of them, with a test for every bug. The lead session then read the code changes and
 re-ran the checks, including the page tests against the built site sending its real security headers, before the fixes were kept.
+
+**Who wrote how much.** Counted by lines in the final code: Sonnet 5.5 wrote about 70% of all the code and Opus 5.5 about 30%,
+but that includes the tests, most of which are Sonnet's. In the app's source alone (no tests) it is about 56% Sonnet and 44% Opus.
+The whole engine (cell model, simulation, ECG, heart sounds, rhythm detection, break-and-fix moves) is Sonnet 5.5; most of the
+renderer, the page shell and the wording are Opus 5.5. The method and the split by area are in `docs/receipts.md`.
 
 `docs/receipts.md` is the build log: what was done, in what order, what went wrong, and the measured numbers. This project is
 not affiliated with, endorsed by or sponsored by Anthropic.
