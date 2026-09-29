@@ -1,11 +1,15 @@
 import { SDF_MAX_MM } from "./fields";
+import { beatWgsl } from "./mechanics";
 
 // WGSL shared by the render passes. Everything is in millimetres in the grid frame.
+
+/** Floats in the per-frame uniform block (26 vec4, the first four the matrix). */
+export const FRAME_FLOATS = 104;
 
 // The per-frame uniforms, on their own for the post passes that need no volume.
 export const frameWgsl = /* wgsl */ `
 struct Frame {
-  viewProj: mat4x4<f32>,
+  viewProj: mat4x4<f32>, // grid frame (at rest) to clip: the pose, the orbit camera and the lens shift
   eye: vec4<f32>,      // camera position, w = seconds
   right: vec4<f32>,    // camera right (unit), w = tan(fovY / 2) * aspect
   up: vec4<f32>,       // camera up (unit), w = tan(fovY / 2)
@@ -13,34 +17,50 @@ struct Frame {
   vol: vec4<f32>,      // padded volume size in voxels, w = voxel size
   view: vec4<f32>,     // canvas width and height in pixels, far, frame counter
   cut: vec4<f32>,      // unit normal, w = offset: the kept side is dot(p, n) - w >= 0
-  march: vec4<f32>,    // cut on, max steps, fine step, thickness behind the shell
+  march: vec4<f32>,    // cut on, max steps, sharpening (0 none), surface detail (0 plain .. 1 full)
   scene: vec4<f32>,    // pivot of the pose in the grid frame, w = floor height above (negative) that pivot
   floorN: vec4<f32>,   // the floor's normal (up in the picture), in the grid frame; w = lens shift up, in clip units
   look: vec4<f32>,     // bloom strength, exposure, glow gain, debug view
   boxMin: vec4<f32>,   // bounds of the padded volume; w = lens shift right, in clip units
-  boxMax: vec4<f32>,
+  boxMax: vec4<f32>,   // w = 1 / muscle voxel count
+  apex: vec4<f32>,     // the apex, mm; w = height of the base above it along the long axis
+  axis: vec4<f32>,     // unit long axis from base to apex; w = how much the local contraction counts (0 in the cutaway)
+  ante: vec4<f32>,     // unit anterior direction of the heart; w = beat gain (0 holds the heart still)
+  left: vec4<f32>,     // unit direction from the right ventricle to the left; w = sub-surface taps
+  centre: vec4<f32>,   // the muscle's centroid, mm; w = spare
+  shadowA: vec4<f32>,  // the heart's footprint on the floor: first axis (unit), w = its half length, mm
+  shadowB: vec4<f32>,  // second axis (unit), w = its half length, mm
+  shadowC: vec4<f32>,  // centre of the footprint on the floor, mm; w = spare
+  cutQuad: vec4<f32>,  // where the heart crosses the cut plane, in the plane's own axes: centre (x, y), half size (z, w)
 };
 
 @group(0) @binding(0) var<uniform> F: Frame;
 `;
 
-// For the shell and scene passes: the uniforms, the voltage volume, noise, the electrophysiology colour
-// map and the tissue lighting. The voltage volume (binding 1) is rgba16float and padded by one voxel like
-// the solver's buffer:
+// For the heart passes: the uniforms, the voltage volume, noise, the electrophysiology colour map and the
+// studio lighting. The voltage volume (binding 1) is rgba16float and padded by one voxel like the solver's buffer:
 //   r = u, g = trend (signed, clamped to -1..1: rising is positive, falling negative),
-//   b = tissue class / 3, a = smoothed tissue density (0.5 is the tissue surface).
+//   b = contraction (0..1), a = smoothed tissue density (0.5 is the tissue surface).
 export const commonWgsl = /* wgsl */ `
 ${frameWgsl}
 @group(0) @binding(1) var fieldTex: texture_3d<f32>;
 @group(0) @binding(2) var lin: sampler;
 @group(0) @binding(8) var<storage, read> stats: array<u32>;
 
-// The excited share of the muscle, 0 at rest to 1 when all of it is up: the room lights up with it.
+${beatWgsl}
+
+// The excited share of the muscle, 0 at rest to 1 when all of it is up.
 fn exciteFraction() -> f32 {
   return saturate(f32(stats[0]) * F.boxMax.w);
 }
 
+// The mean contraction of the muscle, 0 relaxed .. 1 all contracted, times the beat gain.
+fn meanContraction() -> f32 {
+  return saturate(f32(stats[1]) / 1024.0 * F.boxMax.w) * F.ante.w;
+}
+
 const SDF_MAX = ${SDF_MAX_MM.toFixed(1)};
+const PI = 3.14159265;
 
 fn toUvw(p: vec3<f32>) -> vec3<f32> {
   return (p / F.vol.w + vec3<f32>(1.0)) / F.vol.xyz;
@@ -108,55 +128,82 @@ fn vnoise(p: vec3<f32>) -> f32 {
              mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y), u.z);
 }
 
-// Interleaved gradient noise (Jimenez): cheap, well spread, and it dithers a ray start nicely.
-fn ign(p: vec2<f32>) -> f32 {
-  return fract(52.9829189 * fract(dot(p, vec2<f32>(0.06711056, 0.00583715))));
+// Value noise with its gradient (the derivative of the smooth interpolation), for bump mapping without extra taps.
+fn vnoiseD(p: vec3<f32>) -> vec4<f32> {
+  let i = floor(p);
+  let f = fract(p);
+  let u = f * f * (3.0 - 2.0 * f);
+  let du = 6.0 * f * (1.0 - f);
+  let a = hash13(i);
+  let b = hash13(i + vec3<f32>(1.0, 0.0, 0.0));
+  let c = hash13(i + vec3<f32>(0.0, 1.0, 0.0));
+  let d = hash13(i + vec3<f32>(1.0, 1.0, 0.0));
+  let e = hash13(i + vec3<f32>(0.0, 0.0, 1.0));
+  let g = hash13(i + vec3<f32>(1.0, 0.0, 1.0));
+  let h = hash13(i + vec3<f32>(0.0, 1.0, 1.0));
+  let k = hash13(i + vec3<f32>(1.0, 1.0, 1.0));
+  let k1 = b - a;
+  let k2 = c - a;
+  let k3 = e - a;
+  let k4 = a - b - c + d;
+  let k5 = a - c - e + h;
+  let k6 = a - b - e + g;
+  let k7 = -a + b + c - d + e - g - h + k;
+  let v = a + k1 * u.x + k2 * u.y + k3 * u.z + k4 * u.x * u.y + k5 * u.y * u.z + k6 * u.z * u.x + k7 * u.x * u.y * u.z;
+  let grad = du * vec3<f32>(
+    k1 + k4 * u.y + k6 * u.z + k7 * u.y * u.z,
+    k2 + k5 * u.z + k4 * u.x + k7 * u.z * u.x,
+    k3 + k6 * u.x + k5 * u.y + k7 * u.x * u.y);
+  return vec4<f32>(grad, v);
 }
 
-// ---- the colour of the wave --------------------------------------------------------------------
-// Voltage u in this model: rest 0, upstroke overshoot to about 1.5 that relaxes over some 20 mm behind the
-// front to a dome near 1.3, which lasts most of the action potential, then repolarisation back to 0.
-// So the colour follows u itself: the overshoot runs to near white and cools into the electric cyan of
-// the dome, and as the voltage falls the cyan cools to teal and fades. Only the brief rising foot of the
-// front, where u is low but climbing, needs the trend to tell it from the falling tail. Emission is HDR,
-// for the bloom.
-fn waveColour(u: f32, trend: f32) -> vec3<f32> {
-  let x = max(u, 0.0);
-  // the dome is a little brighter just after the overshoot and settles as it ages
-  let dome = vec3<f32>(0.0, 0.27, 0.40) * (0.80 + 0.45 * smoothstep(1.15, 1.45, x));
-  // repolarising side (and everything below the dome that is not rising): cyan cools to teal, then to a
-  // deep blue-green
-  var fall = mix(vec3<f32>(0.0), vec3<f32>(0.0, 0.03, 0.10), smoothstep(0.03, 0.16, x));
-  fall = mix(fall, vec3<f32>(0.0, 0.10, 0.16), smoothstep(0.14, 0.45, x));
-  fall = mix(fall, vec3<f32>(0.0, 0.21, 0.22), smoothstep(0.40, 0.85, x));
-  fall = mix(fall, dome, smoothstep(0.85, 1.10, x));
-  // the rising foot of the front: violet, blue, then cyan
-  var rise = mix(vec3<f32>(0.0), vec3<f32>(0.09, 0.03, 0.36), smoothstep(0.03, 0.22, x));
-  rise = mix(rise, vec3<f32>(0.01, 0.12, 0.52), smoothstep(0.18, 0.55, x));
-  rise = mix(rise, dome, smoothstep(0.50, 1.00, x));
-  let c = mix(fall, rise, smoothstep(0.15, 0.60, trend));
-  // the overshoot behind the front runs to near white
-  let hot = smoothstep(1.31, 1.50, x);
-  return mix(c, vec3<f32>(0.80, 1.50, 2.00), hot);
+
+// ---- the electrical wave ---------------------------------------------------------------------------
+// Voltage u in this model: rest 0, a fast upstroke to about 1.5, which relaxes over some 20 mm behind the
+// front to a dome near 1.3 that lasts most of the action potential, then repolarisation back to 0. The picture
+// keeps tissue looking like tissue: only the front itself, where the voltage is climbing, is a thin line of
+// light; the overshoot just behind it is a softer afterglow; the rest of the excited (refractory) muscle gets
+// a faint cool tint that fades as it recovers.
+
+// How much of the front is here: 1 on the rising edge, a fainter afterglow on the overshoot behind it.
+fn frontLight(u: f32, trend: f32) -> f32 {
+  // the upstroke's foot only: the epicardial action potential dips after its spike and climbs again to the dome,
+  // and that second climb is not the front
+  let rising = smoothstep(0.08, 0.35, trend) * smoothstep(0.03, 0.22, u) * (1.0 - smoothstep(0.75, 1.05, u));
+  let after = smoothstep(1.36, 1.52, u) * 0.22;
+  return max(rising, after);
 }
 
-// ---- lighting ------------------------------------------------------------------------------------
-// A rig that follows the camera: a soft warm key from the upper left, a cool fill, a back light for the
-// silhouette. The tissue itself is dark, desaturated crimson, wet and slightly translucent.
-
-fn ggx(ndh: f32, rough: f32) -> f32 {
-  let a = rough * rough;
-  let a2 = a * a;
-  let d = ndh * ndh * (a2 - 1.0) + 1.0;
-  return a2 / (3.14159265 * d * d);
+// How excited (refractory) the tissue is, for the tint: 1 on the dome, fading as it repolarises.
+fn refractory(u: f32) -> f32 {
+  return smoothstep(0.25, 0.95, u);
 }
 
-fn keyDirection() -> vec3<f32> {
-  return normalize(-0.60 * F.right.xyz + 0.70 * F.up.xyz - 0.50 * F.fwd.xyz);
-}
+// The colour of the light of the front, HDR for the bloom.
+const FRONT_CORE = vec3<f32>(0.62, 1.55, 2.30);
+const FRONT_DEEP = vec3<f32>(0.05, 0.42, 1.00);
+// A shock fires the whole heart at once: a brief warm-white flush, the amber of the Shock control, fading together.
+const FLASH_COL = vec3<f32>(0.46, 0.24, 0.06);
 
-// A studio softbox seen in a mirror: a rectangle of light with soft edges. c is the direction of the box,
-// ax and ay span it, halfW and halfH are its half sizes as slopes, and soft blurs the edge.
+// ---- the studio --------------------------------------------------------------------------------------
+// A rig that follows the camera, as in a product shot: a big warm key box up and to the left, a cool strip
+// light behind to the right that draws the silhouette, a soft box overhead, a faint cool kicker from behind on
+// the left, and a dark room. Diffuse light comes from the same boxes treated as broad lights.
+
+fn keyDir() -> vec3<f32> { return normalize(-0.58 * F.right.xyz + 0.62 * F.up.xyz - 0.52 * F.fwd.xyz); }
+fn rimDir() -> vec3<f32> { return normalize(0.72 * F.right.xyz + 0.30 * F.up.xyz + 0.62 * F.fwd.xyz); }
+fn topDir() -> vec3<f32> { return normalize(0.12 * F.right.xyz + 1.0 * F.up.xyz + 0.05 * F.fwd.xyz); }
+fn kickDir() -> vec3<f32> { return normalize(-0.80 * F.right.xyz + 0.05 * F.up.xyz + 0.60 * F.fwd.xyz); }
+fn fillDir() -> vec3<f32> { return normalize(0.70 * F.right.xyz - 0.10 * F.up.xyz - 0.70 * F.fwd.xyz); }
+
+const KEY_COL = vec3<f32>(1.00, 0.90, 0.80);
+const RIM_COL = vec3<f32>(0.62, 0.84, 1.00);
+const TOP_COL = vec3<f32>(0.90, 0.95, 1.00);
+const KICK_COL = vec3<f32>(0.55, 0.75, 1.00);
+const FILL_COL = vec3<f32>(0.75, 0.82, 0.95);
+
+// A soft-edged rectangle of light seen in a mirror: c is the direction of the box, ax and ay span it, halfW and
+// halfH are its half sizes as slopes, soft blurs its edge.
 fn softbox(r: vec3<f32>, c: vec3<f32>, ax: vec3<f32>, ay: vec3<f32>, halfW: f32, halfH: f32, soft: f32) -> f32 {
   let d = dot(r, c);
   if (d <= 0.05) { return 0.0; }
@@ -165,49 +212,103 @@ fn softbox(r: vec3<f32>, c: vec3<f32>, ax: vec3<f32>, ay: vec3<f32>, halfW: f32,
   return (1.0 - smoothstep(halfW - soft, halfW + soft, abs(x))) * (1.0 - smoothstep(halfH - soft, halfH + soft, abs(y)));
 }
 
-fn shadeTissue(n: vec3<f32>, v: vec3<f32>, albedo: vec3<f32>, rough: f32, occl: f32, gloss: f32) -> vec3<f32> {
-  let keyDir = keyDirection();
-  let fillDir = normalize(0.85 * F.right.xyz - 0.30 * F.up.xyz - 0.35 * F.fwd.xyz);
-  let backDir = normalize(0.45 * F.right.xyz + 0.40 * F.up.xyz + 0.85 * F.fwd.xyz);
-  let ndv = saturate(dot(n, v));
-  let kd = dot(n, keyDir);
-  let excite = exciteFraction();
+// The room around the heart as a mirror sees it: dim above, darker below.
+fn room(r: vec3<f32>) -> vec3<f32> {
+  return mix(vec3<f32>(0.010, 0.008, 0.007), vec3<f32>(0.030, 0.036, 0.045), smoothstep(-0.4, 0.8, dot(r, F.up.xyz)));
+}
 
-  // wrapped diffuse: soft but with a real shadow side
-  let wrap = saturate((kd + 0.22) / 1.22);
-  var col = albedo * vec3<f32>(1.00, 0.84, 0.70) * (1.55 * wrap * wrap);
-  // light bleeding through the thin edge of the tissue, red and orange across the terminator
-  let bleed = smoothstep(-0.30, 0.10, kd) * (1.0 - smoothstep(0.10, 0.60, kd));
-  col = col + vec3<f32>(0.60, 0.09, 0.03) * albedo.r * bleed * 0.75;
-  // cool fill and a faint ambient so the shadow side is never flat black
-  col = col + albedo * vec3<f32>(0.16, 0.36, 0.55) * (0.32 * saturate(dot(n, fillDir) * 0.5 + 0.5));
-  col = col + albedo * vec3<f32>(0.03, 0.07, 0.10) * (0.4 + 0.6 * saturate(dot(n, F.up.xyz) * 0.5 + 0.5));
-  col = col * occl;
+// The studio as the tissue's own sheen sees it: the key and top boxes and a faint cool rim, all broad and soft (rough
+// is the tissue's roughness; their edges widen with it, so a slightly faceted surface shows no steps in them).
+fn studioBroad(r: vec3<f32>, rough: f32) -> vec3<f32> {
+  let soft = 0.12 + rough * 0.7;
+  let k = keyDir();
+  let kx = normalize(cross(k, F.up.xyz));
+  let ky = cross(kx, k);
+  let s = rimDir();
+  let sx = normalize(cross(s, F.up.xyz));
+  let t = topDir();
+  let tx = normalize(cross(t, F.fwd.xyz));
+  let ty = cross(tx, t);
+  var e = KEY_COL * (5.0 * softbox(r, k, kx, ky, 0.50, 0.34, soft));
+  e = e + TOP_COL * (1.2 * softbox(r, t, tx, ty, 1.0, 0.60, soft * 1.2));
+  e = e + RIM_COL * (0.9 * softbox(r, s, sx, F.up.xyz, 0.14, 0.95, soft * 1.2));
+  return e + room(r);
+}
 
-  // wet gloss. The mirror image of a studio: a big soft key box up and to the left, a tall strip light
-  // behind to the right, a wide soft box overhead. Fresnel makes them strongest at grazing angles.
-  let r = 2.0 * n * dot(n, v) - v;
-  let fres = 0.04 + 0.96 * pow(1.0 - ndv, 5.0);
-  let soft = 0.06 + rough * 0.40;
-  let kAx = normalize(cross(keyDir, F.up.xyz));
-  let kAy = cross(kAx, keyDir);
-  let stripDir = normalize(0.80 * F.right.xyz + 0.10 * F.up.xyz + 0.60 * F.fwd.xyz);
-  let sAx = normalize(cross(stripDir, F.up.xyz));
-  let topDir = normalize(0.15 * F.right.xyz + 1.0 * F.up.xyz - 0.25 * F.fwd.xyz);
-  let tAx = normalize(cross(topDir, F.fwd.xyz));
-  let tAy = cross(tAx, topDir);
-  var env = vec3<f32>(1.0, 0.93, 0.85) * (4.6 * softbox(r, keyDir, kAx, kAy, 0.50, 0.32, soft));
-  env = env + vec3<f32>(0.55, 0.85, 1.0) * (2.6 * softbox(r, stripDir, sAx, F.up.xyz, 0.13, 0.85, soft * 1.6));
-  env = env + vec3<f32>(0.85, 0.95, 1.0) * (1.6 * softbox(r, topDir, tAx, tAy, 0.9, 0.55, soft * 1.5));
-  col = col + env * (fres * (1.0 - 0.5 * rough) * mix(0.35, 1.0, occl) * gloss);
-  // a tight point highlight from the key on top, so the gloss has a hot core
-  let hk = normalize(keyDir + v);
-  col = col + vec3<f32>(1.0, 0.93, 0.86) * (ggx(saturate(dot(n, hk)), rough) * (0.04 + 0.96 * pow(1.0 - saturate(dot(hk, v)), 5.0)) * saturate(kd + 0.05) * (0.45 * gloss));
+// The one crisp reflection of the wet film: a long thin strip light up and to the left, tilted a little, with a smooth
+// (Gaussian) profile across it so its edges never show the mesh's facets. It gets wider and dimmer with roughness.
+fn studioSharp(r: vec3<f32>, rough: f32) -> vec3<f32> {
+  let k = normalize(-0.50 * F.right.xyz + 0.58 * F.up.xyz - 0.64 * F.fwd.xyz);
+  let h = normalize(cross(k, F.up.xyz));
+  let v = cross(h, k);
+  // the strip's long axis, turned 25 degrees from the horizontal
+  let along = h * 0.906 + v * 0.423;
+  let across = cross(along, k);
+  let d = dot(r, k);
+  if (d <= 0.05) { return room(r); }
+  let x = dot(r, along) / d;
+  let y = dot(r, across) / d;
+  let w = 0.032 + rough * 0.30;
+  let strip = exp(-(y * y) / (w * w)) * (1.0 - smoothstep(0.9, 1.5, abs(x)));
+  return KEY_COL * (19.0 * strip * (0.032 / w)) + room(r);
+}
 
-  // cool rim on the silhouette, strongest where the back light grazes the surface, and stronger
-  // and bluer while the heart is lit up
-  let rim = pow(1.0 - ndv, 3.0) * (0.15 + 0.85 * saturate(dot(n, backDir) * 0.5 + 0.5));
-  col = col + mix(vec3<f32>(0.10, 0.34, 0.46), vec3<f32>(0.08, 0.55, 0.78), excite) * (rim * (0.85 + 1.6 * excite)) * occl;
+fn fresnel(f0: f32, c: f32) -> f32 {
+  return f0 + (1.0 - f0) * pow(1.0 - saturate(c), 5.0);
+}
+
+// Wet tissue: a wrapped, colour-bleeding diffuse (light scatters through the flesh, red farthest), a broad
+// sheen of the tissue itself, and a sharp clear coat (the film of fluid on it) that mirrors the studio.
+struct Surface {
+  n: vec3<f32>,        // shading normal
+  albedo: vec3<f32>,
+  scatter: vec3<f32>,  // colour of light that has travelled through the tissue
+  wrap: f32,           // how far light wraps round the terminator (0 hard .. 1 very soft)
+  rough: f32,          // the tissue's own specular roughness
+  coat: f32,           // clear-coat strength
+  coatRough: f32,
+  ao: f32,
+  thin: f32,           // light passing right through a thin wall (atria, vessel walls)
+};
+
+fn shade(s: Surface, v: vec3<f32>) -> vec3<f32> {
+  let n = s.n;
+  let ndv = max(dot(n, v), 1e-3);
+  var col = vec3<f32>(0.0);
+
+  // diffuse from the key, the fill and the top, wrapped more in red than in blue, like skin
+  let wrapRgb = vec3<f32>(s.wrap, s.wrap * 0.55, s.wrap * 0.45);
+  let kd = dot(n, keyDir());
+  let dk = saturate((vec3<f32>(kd) + wrapRgb) / (1.0 + wrapRgb));
+  col = col + s.albedo * KEY_COL * (dk * dk) * 2.2;
+  let df = saturate((dot(n, fillDir()) + 0.3) / 1.3);
+  col = col + s.albedo * FILL_COL * (df * df) * 0.20;
+  let dt = saturate((dot(n, topDir()) + 0.2) / 1.2);
+  col = col + s.albedo * TOP_COL * (dt * 0.20);
+  // light that entered near the terminator and scattered out on the dark side: warm and deep
+  let across = smoothstep(-0.55, 0.05, kd) * (1.0 - smoothstep(0.05, 0.55, kd));
+  col = col + s.scatter * s.albedo.r * across * (0.55 * s.wrap);
+  // light through a thin wall from the rim and kicker behind
+  let back = saturate(dot(-n, rimDir())) + 0.6 * saturate(dot(-n, kickDir()));
+  col = col + s.scatter * (back * s.thin * 0.35);
+  // a dim ambient so the shadow side is never flat black, and a warm glow of light that has travelled through the
+  // tissue: in the shadow, and most of all along the silhouette where the surface turns away from the light
+  col = col + s.albedo * mix(vec3<f32>(0.020, 0.018, 0.017), vec3<f32>(0.050, 0.058, 0.070), saturate(dot(n, F.up.xyz) * 0.5 + 0.5));
+  let away = 1.0 - ndv;
+  let unlit = saturate(0.35 - kd);
+  col = col + s.scatter * (s.wrap * (away * away * (0.10 + 0.30 * unlit) + unlit * 0.035));
+  col = col * s.ao;
+
+  // the tissue's own broad, soft sheen: wet tissue under a big soft box shows a big soft glow of it
+  let r = reflect(-v, n);
+  let fr = fresnel(0.05, ndv);
+  let rough2 = max(s.rough, 0.08);
+  col = col + studioBroad(r, rough2) * (fr * (1.45 - rough2) * mix(0.25, 1.0, s.ao));
+
+  // the wet film: one thin, crisp reflection, strongest at grazing angles
+  let fc = fresnel(0.022, ndv) * s.coat;
+  col = col * (1.0 - fc);
+  col = col + studioSharp(r, s.coatRough) * (fc * mix(0.20, 1.0, s.ao));
   return col;
 }
 `;

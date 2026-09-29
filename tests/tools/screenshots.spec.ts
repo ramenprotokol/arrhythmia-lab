@@ -1,5 +1,6 @@
-// Takes the README screenshot and the social-preview image from the real page. Not a test: a build tool,
-// skipped unless MAKE_SHOTS=1. Writes docs/screenshot.png and a clean heart-only shot (SHOT_DIR); the social image is composed from it (see docs/demo.md).
+// Takes the README screenshot and the social-preview picture from the real page. Not a test: a build tool, skipped
+// unless MAKE_SHOTS=1. Writes docs/screenshot.png and a heart-only shot (SHOT_DIR); the social image is composed from
+// it (see docs/demo.md).
 import { test } from "@playwright/test";
 import "../app/labHandle";
 
@@ -15,14 +16,28 @@ async function open(page: import("@playwright/test").Page, w: number, h: number)
 test("screenshots for the README and the social preview", async ({ page }) => {
   test.setTimeout(240_000);
   await open(page, 1440, 900);
-  await page.evaluate(() => window.__lab.setSpeed(0.5));
+  // what a visitor does first: tap the heart (that also clears the "tap the heart" hint), then break it
+  await page.mouse.click(760, 430);
+  await page.waitForTimeout(1500);
   // a racing wave circling: the most striking single frame
-  await page.getByRole("button", { name: "Racing" }).click();
-  await page.evaluate(() => window.__lab.engine.induce("tachycardia"));
-  await page.waitForFunction(() => window.__lab.engine.inducer.state.status === "success", undefined, { timeout: 60_000 });
-  await page.waitForTimeout(5000);
+  await page.getByRole("button", { name: /^Make it race/ }).click();
+  await page.waitForFunction(
+    () => {
+      const l = window.__lab;
+      return l.moves.starting === null && l.moves.settling === null && l.analyzer.state.kind === "racing";
+    },
+    undefined,
+    { timeout: 90_000 },
+  );
+  await page.waitForTimeout(3000);
   await page.screenshot({ path: "docs/screenshot.png" });
-  // the heart alone, with the captions, labels and hint hidden, for the social image
-  await page.evaluate(() => document.querySelectorAll(".hint, .banner, .brand, .labels, .hud").forEach((e) => ((e as HTMLElement).style.visibility = "hidden")));
-  await page.screenshot({ path: `${process.env.SHOT_DIR ?? "test-results/screens"}/heart-clean.png`, clip: { x: 0, y: 0, width: 1036, height: 570 } });
+  // the heart alone: the title bar, cards, buttons, labels and marker hidden (the canvas lives inside #hero, so hide its
+  // siblings one by one, never #hero itself)
+  await page.evaluate(() =>
+    document
+      .querySelectorAll("#topbar, #rec-chip, #hero-chip, #status, #actions-wrap, #dock, .phone-row, #coach, #drawer, #labels, #tap-marker, #flash")
+      .forEach((e) => ((e as HTMLElement).style.visibility = "hidden")),
+  );
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: `${process.env.SHOT_DIR ?? "test-results/screens"}/heart-clean.png` });
 });

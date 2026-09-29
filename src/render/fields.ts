@@ -156,3 +156,53 @@ export function buildFields(grid: HeartGrid): VolumeFields {
 
   return { sx, sy, sz, tissue, density, smooth, distance };
 }
+
+/**
+ * The voxels the voltage pass visits, in the padded layout: every muscle voxel, and every empty voxel with a muscle
+ * voxel beside it (it takes their mean voltage). An entry is the padded linear index in the low 24 bits, bit 24 set
+ * for muscle, and for an empty voxel bits 25-30 flag which of its six neighbours (-x, +x, -y, +y, -z, +z) are muscle.
+ */
+export function voltageCells(f: Pick<VolumeFields, "sx" | "sy" | "sz" | "tissue">): Uint32Array {
+  const { sx, sy, sz, tissue } = f;
+  if (sx * sy * sz >= 1 << 24) throw new Error("the heart grid is too big for the voltage pass");
+  const out: number[] = [];
+  const steps = [-1, 1, -sx, sx, -sx * sy, sx * sy];
+  for (let z = 1; z < sz - 1; z++)
+    for (let y = 1; y < sy - 1; y++)
+      for (let x = 1; x < sx - 1; x++) {
+        const i = x + sx * (y + sy * z);
+        if (tissue[i] !== 0) {
+          out.push(i | (1 << 24));
+          continue;
+        }
+        let mask = 0;
+        for (let a = 0; a < 6; a++) if (tissue[i + steps[a]] !== 0) mask |= 1 << a;
+        if (mask) out.push((i | (mask << 25)) >>> 0);
+      }
+  return Uint32Array.from(out);
+}
+
+/** A number as an IEEE half float (round to nearest), for writing half-float textures. */
+export function toHalf(v: number): number {
+  const f = new Float32Array([v]);
+  const x = new Uint32Array(f.buffer)[0];
+  const sign = (x >>> 16) & 0x8000;
+  const exp = ((x >>> 23) & 0xff) - 127 + 15;
+  const mant = x & 0x7fffff;
+  if (exp <= 0) {
+    if (exp < -10) return sign;
+    const m = (mant | 0x800000) >> (1 - exp);
+    return sign | ((m + 0x1000) >> 13);
+  }
+  if (exp >= 31) return sign | 0x7c00;
+  return (sign | (exp << 10) | (mant >> 13)) + ((mant >> 12) & 1);
+}
+
+/** What the voltage textures hold before the first frame: no voltage, no trend, no contraction, and the density. */
+export function initialField(density: Uint8Array): Uint16Array {
+  const out = new Uint16Array(4 * density.length);
+  const halves = new Uint16Array(256);
+  for (let b = 0; b < 256; b++) halves[b] = toHalf(b / 255);
+  for (let i = 0; i < density.length; i++) out[4 * i + 3] = halves[density[i]];
+  return out;
+}

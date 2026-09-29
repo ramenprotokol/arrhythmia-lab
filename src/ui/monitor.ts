@@ -1,5 +1,5 @@
-// The hospital-monitor style ECG panel: 12 leads (or just lead II) drawn as phosphor traces that sweep across
-// dark ECG paper, with a short gap erased just ahead of the sweep bar.
+// The hospital-monitor style ECG panel: 12 leads (or one big lead, lead II unless the page picks another) drawn as
+// phosphor traces that sweep across dark ECG paper, with a short gap erased just ahead of the sweep bar.
 //
 // Drawing is incremental. Each frame only the columns around the sweep bar change, so render() repaints just
 // those columns of every box, straight from the stored samples, and leaves the rest of the canvas alone. A
@@ -7,7 +7,7 @@
 // two give the same picture.
 import { CanvasDescription } from "./a11y";
 import { INK } from "./ecgPaper";
-import { computeLayout, type Box, type MonitorLayout, type MonitorMode } from "./monitorLayout";
+import { GAIN_MM_PER_MV, GAIN_STEPS, LEAD_NAMES, computeLayout, groupOf, type Box, type LeadGroup, type MonitorLayout, type MonitorMode } from "./monitorLayout";
 import { paintPaper } from "./monitorPaper";
 import { SampleRing } from "./sampleRing";
 
@@ -20,6 +20,13 @@ const MIN_WINDOW_MS = 500;
 const MAX_WINDOW_MS = 120_000;
 /** The ring keeps at most one sample per 0.5 ms, so this many per ms of window is always enough. */
 const MAX_SAMPLES_PER_MS = 2;
+/** With automatic gain on, the swings on show are checked this often, in simulated ms. */
+const GAIN_CHECK_MS = 250;
+/** A group's gain is lowered once its swings would use more than this share of the room between the zero line and the box edge... */
+const FIT_DOWN = 0.95;
+/** ...and raised again, one step, only once the higher gain has left this much spare for this long, so it does not flicker. */
+const FIT_UP = 0.8;
+const GAIN_UP_AFTER_MS = 3000;
 
 const capacityFor = (windowMs: number): number => Math.ceil(windowMs * MAX_SAMPLES_PER_MS) + 8;
 
@@ -44,18 +51,23 @@ function makeDot(dpr: number): HTMLCanvasElement {
   return canvas;
 }
 
-const LABEL: Record<MonitorMode, string> = {
-  twelve: "Simulated 12-lead ECG monitor",
-  single: "Simulated ECG monitor, lead II",
+const LEAD_II = 1;
+const LABEL: Record<MonitorMode, (lead: string) => string> = {
+  twelve: () => "Simulated 12-lead ECG monitor",
+  single: (lead) => `Simulated ECG monitor, lead ${lead}`,
 };
-const DESCRIPTION: Record<MonitorMode, string> = {
-  twelve:
+const mm = (gain: number): string => `${gain} millimetre${gain === 1 ? "" : "s"} per millivolt`;
+/** `strip` is the lead on the rhythm strip or the single trace, as an index into LEAD_NAMES. */
+const DESCRIPTION: Record<MonitorMode, (strip: number, gains: Record<LeadGroup, number>) => string> = {
+  twelve: (strip, g) =>
     "Live traces from the simulated heart: the twelve standard ECG leads (I, II, III, aVR, aVL, aVF and V1 to V6) " +
-    "in three rows of four, with a long lead II rhythm strip along the bottom. Traces sweep from left to right and " +
-    "are redrawn as new data arrives. The gain is fixed at 5 millimetres per millivolt, half the standard, so large swings fit. Simulated. Not a medical device.",
-  single:
-    "Live trace of lead II from the simulated heart, sweeping from left to right and redrawn as new data arrives. " +
-    "The gain is fixed at 10 millimetres per millivolt. Simulated. Not a medical device.",
+    `in three rows of four, with a long lead ${LEAD_NAMES[strip]} rhythm strip along the bottom. Traces sweep from left to right and ` +
+    "are redrawn as new data arrives. " +
+    (g.limb === g.chest ? `The gain is ${mm(g.limb)}` : `The gain is ${mm(g.limb)} for the limb leads and ${mm(g.chest)} for the chest leads`) +
+    ", below the standard 10, so large swings fit. Simulated. Not a medical device.",
+  single: (strip, g) =>
+    `Live trace of lead ${LEAD_NAMES[strip]} from the simulated heart, sweeping from left to right and redrawn as new data arrives. ` +
+    `The gain is ${mm(g[groupOf(strip)])}. Simulated. Not a medical device.`,
 };
 
 export class Monitor {
@@ -64,6 +76,8 @@ export class Monitor {
   private readonly ring = new SampleRing(LEADS, capacityFor(6000));
   private readonly scratch = new Float32Array(LEADS);
   private mode: MonitorMode = "twelve";
+  /** The lead on the rhythm strip and the single big trace. */
+  private stripLead = LEAD_II;
   private windowMs = 6000;
   private cssWidth = 0;
   private cssHeight = 0;
@@ -81,12 +95,68 @@ export class Monitor {
   private paintedVersion = -1;
   /** Time of the newest sample when the canvas was last painted, or NaN if no trace has been painted. */
   private paintedT = Number.NaN;
+  /** Each lead group's gain in mm per mV. Only changed by the automatic gain. */
+  private gains: Record<LeadGroup, number> = { limb: GAIN_MM_PER_MV.twelve, chest: GAIN_MM_PER_MV.twelve };
+  private autoGain = false;
+  /** Simulated time of the last automatic gain check. */
+  private gainCheckedAt = Number.NEGATIVE_INFINITY;
+  /** Since when a group's next higher gain would have fitted, or NaN. */
+  private fitsHigherSince: Record<LeadGroup, number> = { limb: Number.NaN, chest: Number.NaN };
+  /** Spans of simulated time the automatic gain leaves out: a shock's own spike, which a real monitor lets clip. */
+  private gainIgnores: [number, number][] = [];
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     const ctx = canvas.getContext("2d", { alpha: false });
     if (!ctx) throw new Error("Monitor needs a 2D canvas, and this one already has a different kind of context.");
     this.ctx = ctx;
-    this.description = new CanvasDescription(canvas, LABEL.twelve, DESCRIPTION.twelve);
+    this.description = new CanvasDescription(canvas, LABEL.twelve(LEAD_NAMES[LEAD_II]), DESCRIPTION.twelve(LEAD_II, this.gains));
+  }
+
+  /** The lead on the rhythm strip and the single big trace, as an index into LEAD_NAMES. */
+  get stripLeadIndex(): number {
+    return this.stripLead;
+  }
+
+  /** Each lead group's gain now, in mm per mV. */
+  get groupGains(): Readonly<Record<LeadGroup, number>> {
+    return { ...this.gains };
+  }
+
+  /**
+   * Let the monitor lower a lead group's gain (the limb leads', or the chest leads') when its swings would be cut flat at
+   * the edge of their boxes, and raise it again once they fit. The whole trace is redrawn at the new gain, and the paper
+   * always marks the gain in use. Off by default: a fixed gain.
+   */
+  setAutoGain(on: boolean): void {
+    this.autoGain = on;
+    this.gainCheckedAt = Number.NEGATIVE_INFINITY;
+    if (!on) this.resetGains();
+  }
+
+  /**
+   * Leave the samples from `fromMs` to `toMs` (simulated time) out of the automatic gain's decisions. For an artefact such
+   * as a shock's spike: it is drawn, and cut at the box edge like on a real monitor, but the gain follows the rhythm.
+   */
+  ignoreForGain(fromMs: number, toMs: number): void {
+    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs < fromMs) throw new RangeError(`ignoreForGain needs a span of time, got ${fromMs} to ${toMs}`);
+    this.gainIgnores.push([fromMs, toMs]);
+  }
+
+  /** Show another lead on the rhythm strip and the single big trace. The stored samples of every lead are kept. */
+  setStripLead(lead: number): void {
+    if (!Number.isInteger(lead) || lead < 0 || lead >= LEADS) throw new RangeError(`lead must be a whole number from 0 to ${LEADS - 1}, got ${lead}`);
+    if (lead === this.stripLead) return;
+    this.stripLead = lead;
+    this.gainCheckedAt = Number.NEGATIVE_INFINITY;
+    this.describe();
+    if (this.sized) {
+      this.rebuild();
+      this.render();
+    }
+  }
+
+  private describe(): void {
+    this.description.set(LABEL[this.mode](LEAD_NAMES[this.stripLead]), DESCRIPTION[this.mode](this.stripLead, this.gains));
   }
 
   /** One sample of all 12 leads in mV (I, II, III, aVR, aVL, aVF, V1 to V6) at simulated time `tMs`. */
@@ -106,7 +176,8 @@ export class Monitor {
     if (mode !== "twelve" && mode !== "single") throw new RangeError(`mode must be "twelve" or "single", got ${String(mode)}`);
     if (mode === this.mode) return;
     this.mode = mode;
-    this.description.set(LABEL[mode], DESCRIPTION[mode]);
+    this.resetGains();
+    this.describe();
     if (this.sized) {
       this.rebuild();
       this.render();
@@ -133,6 +204,7 @@ export class Monitor {
 
   /** Draw whatever changed since the last call. Call it once per frame. */
   render(): void {
+    if (this.autoGain && this.sized) this.checkGains();
     const layout = this.ensureLayout();
     if (!layout || !this.paper) return;
     const hasData = this.ring.length > 0;
@@ -172,7 +244,80 @@ export class Monitor {
     this.description.remove();
   }
 
+  private resetGains(): void {
+    const start = GAIN_STEPS[this.mode][0];
+    this.gains = { limb: start, chest: start };
+    this.fitsHigherSince = { limb: Number.NaN, chest: Number.NaN };
+    this.gainCheckedAt = Number.NEGATIVE_INFINITY;
+  }
+
+  /**
+   * The automatic gain: for each lead group on show, the highest gain at which its swings in the window fit their boxes.
+   * A group whose swings no longer fit steps down at once; one that has had room to spare for a while steps up one step.
+   */
+  private checkGains(): void {
+    const layout = this.layout;
+    const now = this.ring.lastTime;
+    if (!layout || this.ring.length === 0 || now - this.gainCheckedAt < GAIN_CHECK_MS) return;
+    this.gainCheckedAt = now;
+    const first = this.ring.lowerBound(now - this.windowMs);
+    this.gainIgnores = this.gainIgnores.filter(([, to]) => to >= now - this.windowMs);
+    const ignored = (i: number): boolean => {
+      if (this.gainIgnores.length === 0) return false;
+      const t = this.ring.timeAt(i);
+      return this.gainIgnores.some(([from, to]) => t >= from && t <= to);
+    };
+    const skip = new Uint8Array(Math.max(0, this.ring.length - first));
+    for (let i = first; i < this.ring.length; i++) skip[i - first] = ignored(i) ? 1 : 0;
+    // the most gain each group's boxes allow, keeping FIT_DOWN and FIT_UP of the room
+    const limit = { down: { limb: Infinity, chest: Infinity }, up: { limb: Infinity, chest: Infinity } };
+    const shown = new Set<LeadGroup>();
+    for (const box of layout.boxes) {
+      const group = groupOf(box.lead);
+      shown.add(group);
+      let hi = 0;
+      let lo = 0;
+      for (let i = first; i < this.ring.length; i++) {
+        if (skip[i - first]) continue;
+        const v = this.ring.valueAt(box.lead, i);
+        if (v > hi) hi = v;
+        else if (v < lo) lo = v;
+      }
+      const above = (box.baseline - box.y) / layout.pxPerMm;
+      const below = (box.y + box.h - box.baseline) / layout.pxPerMm;
+      const most = (share: number) => Math.min(hi > 0 ? (share * above) / hi : Infinity, lo < 0 ? (share * below) / -lo : Infinity);
+      limit.down[group] = Math.min(limit.down[group], most(FIT_DOWN));
+      limit.up[group] = Math.min(limit.up[group], most(FIT_UP));
+    }
+    const steps = GAIN_STEPS[this.mode];
+    let changed = false;
+    for (const group of shown) {
+      const gain = this.gains[group];
+      if (gain > limit.down[group]) {
+        this.gains[group] = steps.find((s) => s <= limit.down[group]) ?? steps[steps.length - 1];
+        this.fitsHigherSince[group] = Number.NaN;
+        changed = this.gains[group] !== gain || changed;
+        continue;
+      }
+      const higher = [...steps].reverse().find((s) => s > gain);
+      if (higher === undefined || higher > limit.up[group]) {
+        this.fitsHigherSince[group] = Number.NaN;
+      } else if (Number.isNaN(this.fitsHigherSince[group])) {
+        this.fitsHigherSince[group] = now;
+      } else if (now - this.fitsHigherSince[group] >= GAIN_UP_AFTER_MS) {
+        this.gains[group] = higher;
+        this.fitsHigherSince[group] = Number.NaN;
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.rebuild();
+      this.describe();
+    }
+  }
+
   private reset(): void {
+    this.gainIgnores = [];
     this.ring.clear();
     this.needsFull = true;
     this.paintedT = Number.NaN;
@@ -211,7 +356,15 @@ export class Monitor {
   }
 
   private rebuild(): void {
-    this.layout = computeLayout({ mode: this.mode, width: this.cssWidth, height: this.cssHeight, dpr: this.dpr, windowMs: this.windowMs });
+    this.layout = computeLayout({
+      mode: this.mode,
+      width: this.cssWidth,
+      height: this.cssHeight,
+      dpr: this.dpr,
+      windowMs: this.windowMs,
+      stripLead: this.stripLead,
+      gains: this.gains,
+    });
     this.pad = Math.ceil(7 * this.dpr);
     this.dot = makeDot(this.dpr);
     this.paper = null;
@@ -288,7 +441,7 @@ export class Monitor {
     const firstOfPass = ring.lowerBound(passStart);
     const firstVisibleOfPrevious = ring.lowerBound(now - span + gapMs);
     const limit = 2 * box.h;
-    const gain = layout.pxPerMv;
+    const gain = box.pxPerMv;
     const yOf = (i: number) => box.baseline - Math.max(-limit, Math.min(limit, ring.valueAt(box.lead, i) * gain));
 
     const path = new Path2D();

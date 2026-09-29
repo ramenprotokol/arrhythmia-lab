@@ -3,6 +3,7 @@ import { SheetSim } from "../../src/sim/SheetSim";
 import { EPI } from "../../src/model/params";
 import { Simulation } from "../../src/sim/Simulation";
 import { loadHeart } from "../../src/data/loadHeart";
+import { loadFrame } from "../../src/data/heartFrame";
 import { blockGrid, jaggedGrid } from "./synthGrid";
 import { runScenario, regionStats } from "./scenario";
 import * as recipes from "../../src/lessons/recipes";
@@ -16,6 +17,7 @@ declare global {
       EPI: typeof EPI;
       device: GPUDevice;
       loadHeart: typeof loadHeart;
+      loadFrame: typeof loadFrame;
       blockGrid: typeof blockGrid;
       jaggedGrid: typeof jaggedGrid;
       runScenario: typeof runScenario;
@@ -36,5 +38,5 @@ window.labReady = (async () => {
   const device = await adapter.requestDevice();
   // Any GPU error the page does not catch is recorded, and the tests fail if there is one.
   device.addEventListener("uncapturederror", (e) => window.gpuErrors.push((e as GPUUncapturedErrorEvent).error.message));
-  window.lab = { SheetSim, Simulation, EPI, device, loadHeart, blockGrid, jaggedGrid, runScenario, regionStats, recipes, LabEngine };
+  window.lab = { SheetSim, Simulation, EPI, device, loadHeart, loadFrame, blockGrid, jaggedGrid, runScenario, regionStats, recipes, LabEngine };
 })();

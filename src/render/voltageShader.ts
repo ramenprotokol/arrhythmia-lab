@@ -1,62 +1,71 @@
-// Copies the solver's voltage buffer into a 3D rgba16float texture every frame so the shaders can
-// sample it with trilinear filtering (r32float cannot be filtered). Two textures ping-pong: this
-// frame's is written from the buffer and the previous frame's, so the change since the last frame is
-// known. That change, scaled and clamped, is the "trend" that tells a rising front from a falling tail.
+// Copies the solver's voltage into a 3D rgba16float texture every frame so the shaders can sample it with
+// trilinear filtering (r32float cannot be filtered). Two textures ping-pong: this frame's is written from the
+// buffer and the previous frame's, so the change since the last frame is known. That change, scaled and
+// clamped, is the "trend" that tells a rising front from a falling tail.
 //
-// Output texel: r = u, g = trend, b = tissue class / 3, a = smoothed tissue density.
-// Also counts the excited voxels into stats[0], which the render passes use to light the room.
-// Voxels outside the muscle take the mean of their muscle neighbours' voltage (one voxel of
+// Output texel: r = u, g = trend, b = contraction, a = smoothed tissue density (static).
+//
+// Only the voxels that can change are visited: the muscle, and the empty voxels touching it (a list built once on
+// the CPU). Every other texel keeps the value both textures were created with: no voltage, no contraction, and the
+// density. An empty voxel next to the muscle takes the mean of its muscle neighbours' voltage (one voxel of
 // extension), so trilinear sampling right at the tissue surface never blends the wave with rest.
+//
+// The contraction follows the voltage with a lag, the way muscle tension follows the action potential: it
+// rises a little after the upstroke and relaxes as the tissue repolarises. It is a first-order low-pass in
+// wall-clock time, faster on the way up than on the way down.
+//
+// Also counts, per frame: stats[0] the excited muscle voxels (u above 0.7), stats[1] the sum of the muscle's
+// contraction in 1/1024ths, stats[2] the muscle voxels that were at rest last frame and are excited now. A second, tiny
+// pass (settle) then keeps stats[3], which is not cleared between frames: the seconds since the whole heart fired at
+// once (a shock: most of the muscle excited within one frame, which no beat does), as the bits of a float.
 export const voltageWgsl = /* wgsl */ `
-struct Dims { sx: u32, sy: u32, sz: u32, trendGain: f32 };
+struct Dims { sx: u32, sy: u32, count: u32, trendGain: f32, rise: f32, fall: f32, dt: f32, muscle: u32 };
 
 @group(0) @binding(0) var<uniform> D: Dims;
 @group(0) @binding(1) var<storage, read> volt: array<f32>;
 @group(0) @binding(2) var prevField: texture_3d<f32>;
-@group(0) @binding(3) var tissue: texture_3d<u32>;
-@group(0) @binding(4) var dens: texture_3d<f32>;
+@group(0) @binding(3) var<storage, read> cells: array<u32>;
 @group(0) @binding(5) var outField: texture_storage_3d<rgba16float, write>;
 @group(0) @binding(6) var<storage, read_write> stats: array<atomic<u32>>;
 
-fn isMuscle(p: vec3<i32>) -> bool {
-  if (p.x < 0 || p.y < 0 || p.z < 0 || p.x >= i32(D.sx) || p.y >= i32(D.sy) || p.z >= i32(D.sz)) { return false; }
-  return textureLoad(tissue, p, 0).r != 0u;
-}
+var<workgroup> excitedHere: atomic<u32>;
+var<workgroup> tensionHere: atomic<u32>;
+var<workgroup> freshHere: atomic<u32>;
 
-fn voltAt(p: vec3<i32>) -> f32 {
-  return volt[u32(p.x) + D.sx * (u32(p.y) + D.sy * u32(p.z))];
-}
-
-// How many muscle voxels are excited (u above 0.7) this frame: counted per workgroup first, so the
-// single global counter is touched once per workgroup rather than once per voxel.
-var<workgroup> partial: atomic<u32>;
-
-@compute @workgroup_size(8, 4, 2)
+// A list entry: the padded linear index in the low 24 bits, bit 24 set for muscle, and for an empty voxel bits
+// 25-30 say which of its six neighbours (-x, +x, -y, +y, -z, +z) are muscle.
+@compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) li: u32) {
-  if (li == 0u) { atomicStore(&partial, 0u); }
+  if (li == 0u) {
+    atomicStore(&excitedHere, 0u);
+    atomicStore(&tensionHere, 0u);
+    atomicStore(&freshHere, 0u);
+  }
   workgroupBarrier();
 
-  if (gid.x < D.sx && gid.y < D.sy && gid.z < D.sz) {
-    let p = vec3<i32>(gid);
-    let cls = textureLoad(tissue, p, 0).r;
+  if (gid.x < D.count) {
+    let e = cells[gid.x];
+    let idx = e & 0xFFFFFFu;
+    let muscle = (e & (1u << 24u)) != 0u;
+    let sxy = D.sx * D.sy;
+    let p = vec3<i32>(i32(idx % D.sx), i32((idx / D.sx) % D.sy), i32(idx / sxy));
 
     var u = 0.0;
-    if (cls != 0u) {
-      u = voltAt(p);
-      if (u > 0.7) { atomicAdd(&partial, 1u); }
+    if (muscle) {
+      u = volt[idx];
     } else {
       var sum = 0.0;
-      var count = 0.0;
-      for (var a = 0; a < 6; a = a + 1) {
-        var q = p;
-        let s = select(-1, 1, (a & 1) == 0);
-        if (a < 2) { q.x = q.x + s; } else if (a < 4) { q.y = q.y + s; } else { q.z = q.z + s; }
-        if (isMuscle(q)) {
-          sum = sum + voltAt(q);
-          count = count + 1.0;
+      var n = 0.0;
+      var strides = array<u32, 3>(1u, D.sx, sxy);
+      for (var a = 0u; a < 6u; a = a + 1u) {
+        if ((e & (1u << (25u + a))) != 0u) {
+          let s = strides[a / 2u];
+          let q = select(idx + s, idx - s, (a & 1u) == 0u);
+          sum = sum + volt[q];
+          n = n + 1.0;
         }
       }
-      if (count > 0.0) { u = sum / count; }
+      if (n > 0.0) { u = sum / n; }
     }
 
     let prev = textureLoad(prevField, p, 0);
@@ -75,14 +84,41 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
       trend = select(held, now, abs(now) > abs(held));
     }
 
-    let layer = f32(cls) / 3.0;
-    textureStore(outField, p, vec4<f32>(u, trend, layer, textureLoad(dens, p, 0).r));
+    let goal = smoothstep(0.18, 0.95, u);
+    let k = select(D.fall, D.rise, goal > prev.b);
+    let tension = clamp(prev.b + (goal - prev.b) * k, 0.0, 1.0);
+
+    textureStore(outField, p, vec4<f32>(u, trend, tension, prev.a));
+    if (muscle) {
+      if (u > 0.7) {
+        atomicAdd(&excitedHere, 1u);
+        if (prev.r < 0.3) { atomicAdd(&freshHere, 1u); }
+      }
+      atomicAdd(&tensionHere, u32(tension * 1024.0 + 0.5));
+    }
   }
 
   workgroupBarrier();
   if (li == 0u) {
-    let c = atomicLoad(&partial);
+    let c = atomicLoad(&excitedHere);
     if (c > 0u) { atomicAdd(&stats[0], c); }
+    let t = atomicLoad(&tensionHere);
+    if (t > 0u) { atomicAdd(&stats[1], t); }
+    let f = atomicLoad(&freshHere);
+    if (f > 0u) { atomicAdd(&stats[2], f); }
   }
+}
+
+// After the counts: a shock fired the whole heart this frame if most of the muscle was at rest a frame ago and is
+// excited now (a beat, however fast, spreads over several frames).
+@compute @workgroup_size(1)
+fn settle() {
+  var age = bitcast<f32>(atomicLoad(&stats[3]));
+  if (f32(atomicLoad(&stats[2])) > 0.6 * f32(D.muscle)) {
+    age = 0.0;
+  } else {
+    age = min(age + D.dt, 100.0);
+  }
+  atomicStore(&stats[3], bitcast<u32>(age));
 }
 `;

@@ -1,7 +1,10 @@
 // The whole page, in real Chrome with the real GPU: it starts, beats, draws the ECG, takes taps and buttons,
 // runs the lessons, records a clip, and works on a phone-sized screen.
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect } from "@playwright/test";
 import { consoleGuard } from "../ui/consoleGuard";
+import { LESSONS } from "../../src/lessons/lessons";
+import { DISCLAIMER, SHOCK_REFUSAL } from "../../src/copy";
+import { openExplore, playLesson, start, tapHeart } from "./page";
 import "./labHandle";
 
 const guard = consoleGuard();
@@ -14,12 +17,6 @@ test.afterEach(async ({ page }) => {
   const gpuErrors = await page.evaluate(() => window.__labErrors ?? []);
   expect(gpuErrors).toEqual([]);
 });
-
-async function start(page: Page, query = "debug&quality=low") {
-  await page.goto(`/?${query}`);
-  await page.waitForFunction(() => document.getElementById("loading")?.hidden === true, undefined, { timeout: 90_000 });
-  await page.waitForFunction(() => Boolean(window.__lab), undefined, { timeout: 5_000 });
-}
 
 test("the lab starts, the heart beats by itself, and the ECG fills in", async ({ page }) => {
   test.setTimeout(120_000);
@@ -36,8 +33,15 @@ test("the lab starts, the heart beats by itself, and the ECG fills in", async ({
   expect(r.beat).toBeGreaterThan(0);
   expect(r.samples).toBeGreaterThan(200);
   expect(r.max).toBeGreaterThan(0.2); // a real deflection, not a flat line
-  await expect(page.getByText("Educational simulation. Not a medical device.").first()).toBeVisible();
-  await expect(page.getByText("Built with Claude Sonnet 5.5. Not affiliated with Anthropic.")).toBeVisible();
+  // one short disclaimer is always on show
+  await expect(page.getByText(DISCLAIMER.banner).first()).toBeVisible();
+  // the credits are kept, one click away
+  const credit = page.getByText("Built with Claude Sonnet 5.5. Not affiliated with Anthropic.");
+  await expect(credit).toBeHidden();
+  await page.getByRole("button", { name: "What is this?" }).first().click();
+  await page.getByRole("button", { name: "Credits and sources" }).first().click();
+  await expect(credit).toBeVisible();
+  await expect(page.getByText("Fonts: Instrument Sans, Instrument Serif, JetBrains Mono, SIL OFL 1.1.")).toBeVisible();
 });
 
 test("a tap on the heart fires a beat there, and the buttons work", async ({ page }) => {
@@ -45,78 +49,78 @@ test("a tap on the heart fires a beat there, and the buttons work", async ({ pag
   await start(page);
   await page.evaluate(() => (window.__lab.engine.pacemaker = false));
   const before = await page.evaluate(() => window.__lab.engine.lastBeatAt);
-  const box = (await page.locator("#heart").boundingBox()) as { x: number; y: number; width: number; height: number };
-  await page.mouse.click(box.x + box.width * 0.4, box.y + box.height * 0.5);
+  await tapHeart(page);
   await page.waitForFunction((b) => window.__lab.engine.lastBeatAt > b, before, { timeout: 5_000 });
-  await page.getByRole("button", { name: "Extra beat", exact: true }).click();
-  await page.getByRole("button", { name: "Beat at the tip" }).click();
+  // an early extra beat is timed by the lab, so it fires a moment later
+  const beforeExtra = await page.evaluate(() => window.__lab.engine.lastBeatAt);
+  await page.getByRole("button", { name: "Early extra beat", exact: true }).click();
+  await page.waitForFunction((b) => window.__lab.engine.lastBeatAt > b, beforeExtra, { timeout: 5_000 });
+  // Shock, like a defibrillator, will not shock a heart that is not in a shockable rhythm, and says why
+  const shocks = await page.evaluate(() => window.__lab.audio.stats.shock);
   await page.getByRole("button", { name: "Shock", exact: true }).click();
-  const excited = await page.evaluate(() => window.__lab.sim.excitedFraction());
-  expect(excited).toBe(0);
+  await expect(page.locator("#toast")).toBeVisible();
+  expect([SHOCK_REFUSAL.pumping, SHOCK_REFUSAL.still]).toContain(await page.locator("#toast").textContent());
+  expect(await page.evaluate(() => window.__lab.audio.stats.shock)).toBe(shocks);
   // the tissue sliders and presets drive the simulation
-  await page.getByRole("button", { name: "Fragile" }).click();
+  await openExplore(page);
+  await page.getByRole("button", { name: "Very fragile" }).click();
   const t = await page.evaluate(() => window.__lab.engine.tissue);
   expect(t.conduction).toBeCloseTo(0.5, 2);
   expect(t.recovery).toBeCloseTo(0.17, 2);
+  await page.getByRole("button", { name: "Fragile", exact: true }).click();
+  expect(await page.evaluate(() => window.__lab.engine.tissue)).toEqual({ conduction: 0.7, recovery: 0.3 });
   await page.getByRole("button", { name: "Healthy" }).click();
   expect(await page.evaluate(() => window.__lab.engine.tissue)).toEqual({ conduction: 1, recovery: 1 });
+  // one beat at the tip, from Explore
+  const beforeTip = await page.evaluate(() => window.__lab.engine.lastBeatAt);
+  await page.getByRole("button", { name: "Fire one beat" }).click();
+  await page.waitForFunction((b) => window.__lab.engine.lastBeatAt > b, beforeTip, { timeout: 5_000 });
 });
 
-test("the guided lessons run from the page, including starting a tachycardia", async ({ page }) => {
-  test.setTimeout(240_000);
-  await start(page);
-  await page.evaluate(() => window.__lab.setSpeed(1));
-  await page.getByRole("button", { name: /Sustained tachycardia/ }).click();
-  await expect(page.getByText("Sustained tachycardia").first()).toBeVisible();
-  // walk the lesson with the Next button, letting waiting steps carry on by themselves
-  for (let i = 0; i < 30; i++) {
-    const done = await page.evaluate(() => window.__lab.runner.state.finished);
-    if (done) break;
-    const next = page.getByRole("button", { name: "Next" });
-    if (await next.count()) await next.first().click().catch(() => undefined);
-    await page.waitForTimeout(1500);
-  }
-  const state = await page.evaluate(() => ({ status: window.__lab.engine.inducer.state.status, tissue: window.__lab.engine.tissue }));
-  console.log(`lesson end: inducer ${state.status}, tissue ${JSON.stringify(state.tissue)}`);
-  expect(["success", "idle"]).toContain(state.status);
-});
-
-for (const [n, title] of [[1, "Normal beat"], [2, "An extra beat (PVC)"], [3, "Sustained tachycardia"], [4, "Break into fibrillation"], [5, "Shock it back"]] as const) {
-  test(`lesson ${n} (${title}) can be played through to the end in the real app`, async ({ page }) => {
+for (const lesson of LESSONS) {
+  test(`the lesson "${lesson.title}" can be played through to the end in the real app`, async ({ page }) => {
     test.setTimeout(300_000);
     await start(page);
     await page.evaluate(() => window.__lab.setSpeed(1));
-    await page.getByRole("button", { name: title }).first().click();
-    const seen: string[] = [];
-    for (let i = 0; i < 120; i++) {
-      const st = await page.evaluate(() => ({ done: window.__lab.runner.state.finished, idx: window.__lab.runner.state.stepIndex, excited: window.__lab.engine.excited }));
-      if (st.done) break;
-      seen.push(`${st.idx}`);
-      // The viewer's part: press Next when it is offered; in the shock lesson also press the amber Shock button when asked.
-      const shockAsked = await page.getByText(/press the (amber )?shock button/i).count();
-      if (shockAsked && st.excited > 0.02) await page.getByRole("button", { name: "Shock", exact: true }).click();
-      const next = page.getByRole("button", { name: "Next", exact: true });
-      if (await next.count()) await next.first().click().catch(() => undefined);
-      await page.waitForTimeout(1200);
-    }
-    const end = await page.evaluate(() => ({ done: window.__lab.runner.state.finished, inducer: window.__lab.engine.inducer.state.status }));
-    console.log(`lesson ${n}: finished ${end.done}, steps visited ${[...new Set(seen)].join(",")}, inducer ${end.inducer}`);
-    expect(end.done).toBe(true);
+    const seen = await playLesson(page, lesson.title);
+    console.log(`${lesson.title}: ${seen.join(" > ")}`);
     await expect(page.getByText(/Lesson complete/)).toBeVisible();
   });
 }
 
-test("recording a clip saves a webm file", async ({ page }) => {
+test("recording a clip saves a webm file, the page shows that it is recording, and with the sound on the clip has the heartbeat", async ({ page }) => {
   test.setTimeout(120_000);
   await start(page);
   await page.evaluate(() => window.__lab.setSpeed(1));
   await page.getByRole("button", { name: "Record clip" }).click();
+  await expect(page.getByRole("button", { name: "Stop and save" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#b-record")).toHaveClass(/recording/);
+  await expect(page.locator("#rec-time-button")).toHaveText(/^0:0\d \/ 0:30$/);
   await page.waitForTimeout(2500);
   const [download] = await Promise.all([page.waitForEvent("download", { timeout: 20_000 }), page.getByRole("button", { name: /Stop and save/ }).click()]);
   expect(download.suggestedFilename()).toMatch(/\.webm$/);
   const path = await download.path();
-  const { statSync } = await import("node:fs");
+  const { readFileSync, statSync } = await import("node:fs");
   expect(statSync(path).size).toBeGreaterThan(5_000);
+  await expect(page.getByRole("button", { name: "Record clip" })).toHaveAttribute("aria-pressed", "false");
+
+  // with the sound on, the clip carries the heartbeat: its audio decodes, and it is not silent
+  await page.locator("#b-sound").click();
+  await page.waitForFunction(() => window.__lab.audio.state === "on", undefined, { timeout: 5_000 });
+  await page.getByRole("button", { name: "Record clip" }).click();
+  await page.waitForTimeout(3500); // four or five beats at 75 a minute
+  const [withSound] = await Promise.all([page.waitForEvent("download", { timeout: 20_000 }), page.getByRole("button", { name: /Stop and save/ }).click()]);
+  const bytes = readFileSync(await withSound.path()).toString("base64");
+  const sound = await page.evaluate(async (b64) => {
+    const data = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    const decoded = await new AudioContext().decodeAudioData(data.buffer);
+    let peak = 0;
+    for (let c = 0; c < decoded.numberOfChannels; c++) for (const v of decoded.getChannelData(c)) peak = Math.max(peak, Math.abs(v));
+    return { seconds: decoded.duration, peak };
+  }, bytes);
+  console.log(`clip with sound: ${sound.seconds.toFixed(1)} s of audio, peak ${sound.peak.toFixed(3)}`);
+  expect(sound.seconds).toBeGreaterThan(2);
+  expect(sound.peak).toBeGreaterThan(0.01);
 });
 
 for (const [name, width, height] of [["desktop", 1440, 900], ["phone", 390, 844]] as const) {
@@ -128,6 +132,6 @@ for (const [name, width, height] of [["desktop", 1440, 900], ["phone", 390, 844]
     await page.waitForTimeout(1800);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(overflow).toBeLessThanOrEqual(1);
-    await page.screenshot({ path: `${process.env.SHOT_DIR ?? "test-results/screens"}/app-${name}.png`, fullPage: name === "phone" });
+    await page.screenshot({ path: `${process.env.SHOT_DIR ?? "test-results/screens"}/app-${name}.png` });
   });
 }

@@ -133,6 +133,100 @@ test("the composite draws its layers at their rectangles, later layers on top, a
   expect(r.manual).toEqual([255, 0, 255]);
 });
 
+test("the overlay is drawn after every layer, on top, with the composite's own size", async ({ page }) => {
+  await open(page);
+  const r = await page.evaluate(async () => {
+    const { ui } = window;
+    const { createComposite } = await ui.loadRecorder();
+    const red = document.createElement("canvas");
+    red.width = 40;
+    red.height = 40;
+    (red.getContext("2d") as CanvasRenderingContext2D).fillStyle = "#f00";
+    (red.getContext("2d") as CanvasRenderingContext2D).fillRect(0, 0, 40, 40);
+    const calls: number[][] = [];
+    const composite = createComposite(
+      { width: 80, height: 40 },
+      [{ source: red, rect: [0, 0, 80, 40] }],
+      {
+        paused: true,
+        overlay: (ctx, width, height) => {
+          calls.push([width, height]);
+          ctx.fillStyle = "#00f";
+          ctx.fillRect(10, 10, 20, 20); // on top of the red layer
+        },
+      },
+    );
+    const before = calls.length; // paused: nothing is drawn until asked
+    composite.draw();
+    const ctx = composite.canvas.getContext("2d", { willReadFrequently: true }) as CanvasRenderingContext2D;
+    const at = (x: number, y: number) => Array.from(ctx.getImageData(x, y, 1, 1).data).slice(0, 3);
+    return { before, calls: calls.length, size: calls[0], overlaid: at(20, 20), layer: at(60, 30) };
+  });
+  expect(r.before).toBe(0);
+  expect(r.calls).toBe(1);
+  expect(r.size).toEqual([80, 40]);
+  expect(r.overlaid).toEqual([0, 0, 255]);
+  expect(r.layer).toEqual([255, 0, 0]);
+});
+
+test("a clip made with an audio source has the sound in it, and one without has none", async ({ page }) => {
+  await open(page);
+  await page.mouse.click(5, 5); // a real click, so the browser lets the audio context run
+  const r = await page.evaluate(async () => {
+    const { ui } = window;
+    const { ClipRecorder, pickMimeType } = await ui.loadRecorder();
+    const canvas = ui.animatedCanvas(96, 64, 80);
+
+    const context = new AudioContext();
+    await context.resume();
+    const tone = context.createOscillator();
+    tone.frequency.value = 220;
+    const gain = context.createGain();
+    gain.gain.value = 0.4;
+    const destination = context.createMediaStreamDestination();
+    tone.connect(gain).connect(destination);
+    tone.start();
+
+    const record = async (audio?: () => MediaStream | null) => {
+      const recorder = new ClipRecorder(canvas, { fps: 30, maxSeconds: 10, audio });
+      recorder.start();
+      await ui.sleep(1500);
+      return recorder.stop();
+    };
+    const loudness = async (blob: Blob): Promise<number | string> => {
+      try {
+        const decoded = await new AudioContext().decodeAudioData(await blob.arrayBuffer());
+        const data = decoded.getChannelData(0);
+        let sum = 0;
+        for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+        return Math.sqrt(sum / data.length);
+      } catch (e) {
+        return `cannot decode: ${(e as Error).name}`;
+      }
+    };
+    const withSound = await record(() => destination.stream);
+    const noSource = await record(() => null);
+    const plain = await record();
+    tone.stop();
+    return {
+      state: context.state,
+      withAudioType: pickMimeType(true),
+      withSound: { type: withSound.type, size: withSound.size, loudness: await loudness(withSound) },
+      noSource: { loudness: await loudness(noSource) },
+      plain: { loudness: await loudness(plain) },
+    };
+  });
+  expect(r.state).toBe("running");
+  expect(r.withAudioType).toMatch(/opus/);
+  expect(r.withSound.type).toBe("video/webm");
+  expect(r.withSound.size).toBeGreaterThan(2000);
+  // a 0.4 tone is about 0.28 rms; anything well above silence proves the sound is in the file
+  expect(r.withSound.loudness).toBeGreaterThan(0.1);
+  // no audio source (or a source that gives nothing) means a picture-only clip: there is no track to decode
+  expect(String(r.noSource.loudness)).toMatch(/cannot decode/);
+  expect(String(r.plain.loudness)).toMatch(/cannot decode/);
+});
+
 test("a layer that has no size yet, or a bad rectangle, does not stop the composite", async ({ page }) => {
   await open(page);
   const r = await page.evaluate(async () => {

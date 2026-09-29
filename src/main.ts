@@ -1,3 +1,9 @@
+// The fonts are served from this site with the page (the strict content policy allows nothing else): latin only.
+import "@fontsource/instrument-sans/latin-400.css";
+import "@fontsource/instrument-sans/latin-600.css";
+import "@fontsource/instrument-sans/latin-700.css";
+import "@fontsource/instrument-serif/latin-400.css";
+import "@fontsource/jetbrains-mono/latin-700.css";
 import "./style.css";
 import { showFallback } from "./fallback";
 

@@ -7,7 +7,12 @@ export type Voxel = [number, number, number];
 export type LabApi = {
   pace(voxel: Voxel): void;
   prematureBeat(): void;
+  /** A silent reset: every cell to rest at once. For a lesson clearing the heart before it starts. */
   shock(): void;
+  /** The heart's ordinary beat (what the pacemaker fires). */
+  normalBeat(): void;
+  /** A defibrillator's shock: the whole heart fires at once, with the flash and the sound. */
+  defibrillate(): void;
   setTissue(t: { conduction?: number; recovery?: number }): void;
   activeFraction(): number;
   /** Simulated time in ms. It only moves while the simulation runs. */
@@ -36,8 +41,17 @@ export type LessonStep = {
   waitFor?: (api: LabApi) => boolean;
   /** Simulated ms that must pass, counted from when the action ran, before `waitFor` may move the step on. */
   minMs?: number;
-  /** Shown by the UI if the viewer seems stuck on a `waitFor` step. */
+  /**
+   * Help for a viewer who seems stuck on a `waitFor` step. It is offered (RunnerState.hint) only once the step has
+   * lasted `hintAfterMs` of simulated time and `waitFor` is still false, so it never contradicts what is on screen.
+   */
   hint?: string;
+  /** Simulated ms before the hint may be offered. Default HINT_AFTER_MS. */
+  hintAfterMs?: number;
+  /** False for a step only the viewer can finish, such as pressing Shock: no Skip, and next() waits for `waitFor`. */
+  canSkip?: boolean;
+  /** Hold the ECG trace still while this step is on screen, because its words point at what the trace shows. */
+  holdEcg?: boolean;
 };
 
 export type Lesson = { id: string; title: string; summary: string; steps: LessonStep[] };
@@ -50,9 +64,14 @@ export type RunnerState = {
   step: LessonStep | null;
   finished: boolean;
   running: boolean;
+  /** The step's hint when the viewer seems stuck (see LessonStep.hint), otherwise null. */
+  hint: string | null;
 };
 
-const IDLE: RunnerState = { lessonId: null, stepIndex: 0, step: null, finished: false, running: false };
+/** How long a `waitFor` step lasts, in simulated ms, before its hint may be offered. */
+export const HINT_AFTER_MS = 8000;
+
+const IDLE: RunnerState = { lessonId: null, stepIndex: 0, step: null, finished: false, running: false, hint: null };
 
 export class LessonRunner {
   private readonly byId = new Map<string, Lesson>();
@@ -63,6 +82,7 @@ export class LessonRunner {
   /** True from entering a step until its action has run. */
   private pending = false;
   private enteredAtMs = 0;
+  private hint: string | null = null;
   private snapshot: RunnerState = IDLE;
 
   constructor(
@@ -88,7 +108,10 @@ export class LessonRunner {
     this.publish();
   }
 
-  /** Call every frame. Runs a pending action once, then moves a `waitFor` step on when it is ready. */
+  /**
+   * Call every frame. Runs a pending action once, then moves a `waitFor` step on when it is ready, and offers its
+   * hint while the viewer seems stuck.
+   */
   tick(): void {
     const lesson = this.lesson;
     if (lesson === null || this.done) return;
@@ -97,14 +120,32 @@ export class LessonRunner {
     if (step.waitFor === undefined) return;
     const now = this.api.simTimeMs();
     if (now < this.enteredAtMs) this.enteredAtMs = now; // the simulation clock restarted
-    if (now - this.enteredAtMs < (step.minMs ?? 0)) return;
-    if (step.waitFor(this.api)) this.advance();
+    const elapsed = now - this.enteredAtMs;
+    const minMet = elapsed >= (step.minMs ?? 0);
+    const hintDue = step.hint !== undefined && elapsed >= (step.hintAfterMs ?? HINT_AFTER_MS);
+    if (!minMet && !hintDue) return;
+    const ready = step.waitFor(this.api);
+    if (ready && minMet) {
+      this.advance();
+      return;
+    }
+    const hint = hintDue && !ready ? (step.hint ?? null) : null;
+    if (hint !== this.hint) {
+      this.hint = hint;
+      this.publish();
+    }
   }
 
-  /** Manual advance. A step whose action has not run yet runs it first, so later steps can rely on it. */
+  /**
+   * Manual advance. A step whose action has not run yet runs it first, so later steps can rely on it. A step that
+   * cannot be skipped only moves on once its `waitFor` is true.
+   */
   next(): void {
-    if (this.lesson === null || this.done) return;
+    const lesson = this.lesson;
+    if (lesson === null || this.done) return;
     if (!this.runPending()) return;
+    const step = lesson.steps[this.index];
+    if (step.canSkip === false && step.waitFor !== undefined && !step.waitFor(this.api)) return;
     this.advance();
   }
 
@@ -146,6 +187,7 @@ export class LessonRunner {
     this.index = index;
     this.done = this.lesson === null || index >= this.lesson.steps.length;
     this.pending = !this.done;
+    this.hint = null;
   }
 
   private advance(): void {
@@ -175,6 +217,7 @@ export class LessonRunner {
             step: this.done ? null : lesson.steps[this.index],
             finished: this.done,
             running: !this.done,
+            hint: this.done ? null : this.hint,
           };
     for (const entry of [...this.listeners]) entry.fn();
   }

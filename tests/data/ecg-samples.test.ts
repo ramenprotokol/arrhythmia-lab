@@ -11,6 +11,7 @@ interface Sample {
   fs: number;
   mv: number[];
   record: string;
+  caption?: string;
 }
 interface EcgFile {
   samples: Sample[];
@@ -41,15 +42,39 @@ describe("ecg-samples.json", () => {
 
   it("every sample has the exact shape, a record id and finite numbers", () => {
     for (const s of data.samples) {
-      expect(Object.keys(s).sort()).toEqual(["fs", "id", "label", "lead", "mv", "record"]);
+      expect(Object.keys(s).sort()).toEqual(["caption", "fs", "id", "label", "lead", "mv", "record"]);
       expect(s.id.length).toBeGreaterThan(0);
       expect(s.label.length).toBeGreaterThan(0);
       expect(s.record.length).toBeGreaterThan(0);
-      expect(s.lead).toBe("II");
+      // The lead each recording really has: lead II, MIT-BIH's modified lead II (chest electrodes), or not stated.
+      expect(["II", "MLII", "unspecified"]).toContain(s.lead);
       expect(Number.isFinite(s.fs)).toBe(true);
       expect(s.mv.length).toBeGreaterThan(0);
       expect(s.mv.every((v) => Number.isFinite(v))).toBe(true);
     }
+  });
+
+  it("every sample has a caption of at most 140 characters that names its lead", () => {
+    for (const s of data.samples) {
+      expect(s.caption!.length).toBeGreaterThan(0);
+      expect(s.caption!.length).toBeLessThanOrEqual(140);
+      if (s.lead === "MLII") expect(s.caption).toMatch(/modified lead II/i);
+      if (s.lead === "unspecified") expect(s.caption).toMatch(/does not say which/i);
+    }
+  });
+
+  it("every trace fits the Compare panel, which draws -1.5 mV to +3.5 mV", () => {
+    for (const s of data.samples) {
+      expect(Math.min(...s.mv)).toBeGreaterThanOrEqual(-1.5);
+      expect(Math.max(...s.mv)).toBeLessThanOrEqual(3.5);
+    }
+  });
+
+  it("has a real ventricular fibrillation, and tells atrial fibrillation apart from it", () => {
+    const vf = data.samples.find((s) => s.id === "vfib");
+    expect(vf?.label).toMatch(/^Ventricular fibrillation:/);
+    const af = data.samples.find((s) => s.id === "afib");
+    if (af) expect(af.caption).toMatch(/different from VF/);
   });
 
   it("is at most 250 Hz and at most 5 seconds per sample", () => {

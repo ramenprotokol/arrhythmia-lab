@@ -1,18 +1,16 @@
-// The five lessons played on the real page, in real Chrome with the real GPU, the way a viewer plays them: start a
-// lesson with its button, press Next when a step has one, press the Shock button when the lesson asks for it, and
-// let the waiting steps move on by themselves. Nothing is skipped, so every waiting condition has to be satisfied
-// by the real simulation.
-//
-// Needs the page's ?debug handle (window.__lab, see src/app.ts). The unit tests in lessons.test.ts cover the same
-// flows against a stand-in lab; this shows the real one agrees.
+// The five lessons played on the real page, in real Chrome with the real GPU, the way a viewer plays them: open the
+// Lessons drawer, pick the lesson, tap the heart when asked, press Next when a step has one, press Shock when a lesson
+// asks for it, and let the waiting steps move on by themselves. Nothing is skipped, so every waiting condition has to
+// be satisfied by the real simulation, and what the words say about the beats is checked against the real heart.
+// Needs the page's ?debug handle (window.__lab, see src/app.ts) to read where the lesson is and what the heart does.
+// The unit tests in lessons.test.ts cover the same flows against a stand-in lab.
 import { test, expect, type Page } from "@playwright/test";
-import { mkdirSync, writeFileSync } from "node:fs";
 import { consoleGuard } from "./consoleGuard";
 import * as R from "../../src/lessons/recipes";
 import { LESSONS, LESSON_SETTINGS } from "../../src/lessons/lessons";
+import { LESSON_UI, LABELS } from "../../src/copy";
+import { PACEMAKER_PERIOD_MS } from "../../src/lab/engine";
 
-// The page runs at half speed unless told otherwise. LESSON_SPEED=0.5 plays the lessons at that pace (they take about twice as long).
-const SPEED = Number(process.env.LESSON_SPEED ?? 1);
 const S = LESSON_SETTINGS;
 
 const guard = consoleGuard();
@@ -24,31 +22,32 @@ test.afterEach(async ({ page }) => {
 });
 test.describe.configure({ mode: "serial" });
 
+type Step = { title?: string; waitFor?: unknown; canSkip?: boolean };
 type Lab = {
   engine: { simTime: number; lastBeatAt: number; excited: number; pacemaker: boolean; tissue: { conduction: number; recovery: number }; inducer: { state: { status: string } } };
-  sim: { excitedFraction(): Promise<number> };
-  runner: { state: { lessonId: string | null; stepIndex: number; step: { title?: string } | null; finished: boolean } };
+  runner: { state: { lessonId: string | null; stepIndex: number; step: Step | null; finished: boolean; hint: string | null }; start(id: string): void; next(): void };
+  renderer: { project(voxel: [number, number, number]): { x: number; y: number; visible: boolean }; onTap?: (x: number, y: number) => void };
+  analyzer: { state: { kind: string; bpm: number | null; output: number; sinceMs: number } };
+  moves: { shock(rhythm: unknown): { fired: boolean; reason?: string } };
   setSpeed(s: number): void;
 };
 type Log = {
+  /** Every stimulus the engine delivered (it notes the time of each), whether or not it captured. */
   beats: { at: number; pacemaker: boolean }[];
-  steps: { title: string; lesson: string | null; at: number; pacemaker: boolean; excited: number }[];
+  steps: { title: string; lesson: string | null; at: number; excited: number }[];
   /** How much of the muscle was excited, on every frame. */
   excited: { at: number; value: number }[];
-  /** The simulated time at which this test pressed the Shock button. */
-  shocks: number[];
 };
-// Inside page.evaluate the callbacks run in the page, so each one reads the handle for itself.
 
 async function open(page: Page) {
   await page.goto("/?debug&quality=low");
   await page.waitForFunction(() => document.getElementById("loading")?.hidden === true, undefined, { timeout: 90_000 });
   await page.waitForFunction(() => Boolean((window as unknown as { __lab?: unknown }).__lab), undefined, { timeout: 5_000 });
-  await page.evaluate((speed) => {
+  await page.evaluate(() => {
     const lab = () => (window as unknown as { __lab: Lab }).__lab;
-    lab().setSpeed(speed);
-    // a sampler that notes every beat and every change of step, as the lessons run
-    const log: Log = { beats: [], steps: [], excited: [], shocks: [] };
+    lab().setSpeed(1); // real time, the page's default
+    // a sampler that notes every stimulus and every change of step, as the lessons run
+    const log: Log = { beats: [], steps: [], excited: [] };
     let lastBeat = lab().engine.lastBeatAt;
     let lastKey = "";
     const sample = () => {
@@ -63,243 +62,271 @@ async function open(page: Page) {
       const key = `${s.lessonId}/${title}`;
       if (key !== lastKey) {
         lastKey = key;
-        log.steps.push({ title, lesson: s.lessonId, at: e.simTime, pacemaker: e.pacemaker, excited: e.excited });
+        log.steps.push({ title, lesson: s.lessonId, at: e.simTime, excited: e.excited });
       }
       requestAnimationFrame(sample);
     };
     requestAnimationFrame(sample);
     (window as unknown as { lessonLog: Log }).lessonLog = log;
-  }, SPEED);
+  });
 }
 
 /**
- * Start a lesson and play it: press Next when a step has one, press the Shock button when the lesson says to, and
- * otherwise wait. Stops when the lesson is finished, or when it reaches the step called `until`.
+ * A click on the front of the heart, over the middle of the muscle (the middle itself is hidden behind the front wall,
+ * which is what the click lands on). A real mouse click when nothing covers that spot; if a panel does, the page's own
+ * tap handler is called with the same point.
  */
-async function play(page: Page, title: RegExp, opts: { until?: string; budgetMs?: number } = {}) {
-  await page.getByRole("button", { name: title }).click();
+async function tapHeart(page: Page) {
+  const at = await page.evaluate(async () => {
+    const frame = (await (await fetch("data/heart-frame.json")).json()) as { centroid: [number, number, number] };
+    const w = window as unknown as { __lab: Lab };
+    const p = w.__lab.renderer.project(frame.centroid.map(Math.round) as [number, number, number]);
+    const canvas = document.getElementById("heart")!;
+    const box = canvas.getBoundingClientRect();
+    const x = box.left + p.x;
+    const y = box.top + p.y;
+    const onCanvas = p.x >= 0 && p.y >= 0 && p.x <= box.width && p.y <= box.height;
+    const clear = onCanvas && document.elementFromPoint(x, y) === canvas;
+    if (onCanvas && !clear) w.__lab.renderer.onTap?.(p.x, p.y);
+    return { x, y, onCanvas, clear };
+  });
+  expect(at.onCanvas, "the middle of the heart is on the canvas").toBe(true);
+  if (at.clear) await page.mouse.click(at.x, at.y);
+}
+
+/** Press the page's Shock button, as the viewer would. */
+async function pressShock(page: Page) {
+  await page.getByRole("button", { name: LABELS.shock, exact: true }).first().click();
+}
+
+/** The lesson panel, inside the drawer. */
+const lessonPanel = (page: Page) => page.locator("#lessons");
+
+/** Open the Lessons drawer from the top bar, as a viewer does, and pick the lesson by its title. */
+async function startLesson(page: Page, id: string) {
+  const title = LESSONS.find((l) => l.id === id)!.title;
+  const choice = lessonPanel(page).getByRole("button", { name: title });
+  if (!(await choice.isVisible())) await page.getByRole("button", { name: LABELS.lessons, exact: true }).first().click();
+  await choice.click();
+}
+
+/**
+ * Play a lesson: open it from the Lessons drawer (unless `resume`, which carries on where it is), tap when asked, press
+ * Next on reading steps, Shock when asked, and otherwise wait. Stops when it is finished, or at the step called `until`.
+ */
+async function play(page: Page, id: string, opts: { until?: string; budgetMs?: number; readMs?: number; resume?: boolean } = {}) {
+  if (!opts.resume) await startLesson(page, id);
   const started = Date.now();
-  const budget = opts.budgetMs ?? 200_000;
-  let pressed = false;
+  const budget = opts.budgetMs ?? 150_000;
+  let tapped = false;
+  let shocked = false;
   while (Date.now() - started < budget) {
     const now = await page.evaluate(() => {
       const s = (window as unknown as { __lab: Lab }).__lab.runner.state;
-      return { finished: s.finished, title: s.step?.title ?? null };
+      return { finished: s.finished, title: s.step?.title ?? null, waits: s.step?.waitFor !== undefined, fixed: s.step?.canSkip === false };
     });
-    if (now.finished || (opts.until && now.title === opts.until)) return Date.now() - started;
-    if (now.title === "Shock" && !pressed) {
+    if (now.finished || (opts.until && now.title === opts.until)) {
+      await page.waitForTimeout(250); // let the page's sampler, which runs once a frame, log the step too
+      return Date.now() - started;
+    }
+    if (now.title === "Tap the heart" && !tapped) {
+      await page.waitForTimeout(800); // reading
+      tapped = true;
+      await tapHeart(page);
+    } else if (now.fixed && !shocked) {
       await page.waitForTimeout(1200); // reading
-      pressed = true;
-      await page.evaluate(() => {
-        const w = window as unknown as { __lab: Lab; lessonLog: Log };
-        w.lessonLog.shocks.push(w.__lab.engine.simTime);
-      });
-      await page.getByRole("button", { name: "Shock", exact: true }).click();
-      continue;
-    }
-    const next = page.getByRole("button", { name: "Next", exact: true });
-    if (await next.count()) {
-      await page.waitForTimeout(700); // reading
-      await next.first().click({ timeout: 2000 }).catch(() => undefined);
+      shocked = true;
+      await pressShock(page);
+    } else if (!now.waits) {
+      await page.waitForTimeout(opts.readMs ?? 600); // reading
+      await lessonPanel(page).getByRole("button", { name: LESSON_UI.next, exact: true }).click();
     } else {
-      await page.waitForTimeout(400);
+      await page.waitForTimeout(200);
     }
+    if (now.title !== "Tap the heart") tapped = false;
+    if (!now.fixed) shocked = false;
   }
-  throw new Error(`the lesson did not finish within ${budget / 1000} s of real time`);
+  throw new Error(`the ${id} lesson did not finish within ${budget / 1000} s of real time`);
 }
 
 const readLog = (page: Page) => page.evaluate(() => (window as unknown as { lessonLog: Log }).lessonLog);
-const excitedNow = (page: Page) => page.evaluate(() => (window as unknown as { __lab: Lab }).__lab.sim.excitedFraction());
 const labState = (page: Page) =>
   page.evaluate(() => {
     const e = (window as unknown as { __lab: Lab }).__lab.engine;
-    return { pacemaker: e.pacemaker, tissue: e.tissue, inducer: e.inducer.state.status };
+    return { pacemaker: e.pacemaker, tissue: { ...e.tissue }, inducer: e.inducer.state.status, simTime: e.simTime };
   });
-/** When a lesson's step was first shown, from the sampler's log. */
 const entered = (log: Log, lesson: string, title: string) => {
   const step = log.steps.find((s) => s.lesson === lesson && s.title === title);
   if (!step) throw new Error(`the ${lesson} lesson never showed "${title}": ${log.steps.filter((s) => s.lesson === lesson).map((s) => s.title).join(" > ")}`);
   return step;
 };
-const peakWithin = (log: Log, from: number, ms: number) => Math.max(...log.excited.filter((x) => x.at >= from && x.at < from + ms).map((x) => x.value));
+const peakWithin = (log: Log, from: number, ms: number) => Math.max(0, ...log.excited.filter((x) => x.at >= from && x.at < from + ms).map((x) => x.value));
 const path = (log: Log, lesson: string) => log.steps.filter((s) => s.lesson === lesson).map((s) => s.title).join(" > ");
-
-test("normal beat: the pacemaker pauses, one beat crosses the heart, the pacemaker comes back", async ({ page }) => {
-  test.setTimeout(300_000);
-  await open(page);
-  const took = await play(page, /Normal beat/);
-  const log = await readLog(page);
-  console.log(`normal beat lesson: ${(took / 1000).toFixed(1)} s: ${path(log, "normal-beat")}`);
-  const oneBeat = entered(log, "normal-beat", "One beat");
-  const seen = entered(log, "normal-beat", "What you just saw");
-  expect(oneBeat.pacemaker).toBe(false); // paused before the beat
-  // exactly one beat was given while the pacemaker was paused
-  const whilePaused = log.beats.filter((b) => !b.pacemaker && b.at >= oneBeat.at - 50);
-  expect(whilePaused.length).toBe(1);
-  expect(seen.excited).toBeLessThan(0.01); // and its wave was over before the lesson moved on
-  const end = await labState(page);
-  expect(end.pacemaker).toBe(true);
-  expect(end.tissue).toEqual(R.NORMAL_TISSUE);
-});
-
-test("extra beat: two steady beats, then an early one, all given by the lesson with the pacemaker paused", async ({ page }) => {
-  test.setTimeout(300_000);
-  await open(page);
-  const took = await play(page, /An extra beat \(PVC\)/);
-  const log = await readLog(page);
-  const beatOne = entered(log, "extra-beat", "Beat one");
-  const learned = entered(log, "extra-beat", "What you learned");
-  const given = log.beats.filter((b) => b.at >= beatOne.at - 60 && b.at < learned.at);
-  console.log(`extra beat lesson: ${(took / 1000).toFixed(1)} s: ${path(log, "extra-beat")}`);
-  expect(given, "the lesson's own three beats and nothing else").toHaveLength(3);
-  expect(given.every((b) => !b.pacemaker)).toBe(true);
-  const [one, two, extra] = given.map((b) => b.at);
-  console.log(`extra beat lesson: beats ${Math.round(two - one)} ms and ${Math.round(extra - two)} ms apart`);
-  expect(Math.abs(two - one - S.steadyGapMs)).toBeLessThan(40);
-  expect(extra - two).toBeGreaterThanOrEqual(R.PVC_EXTRA_BEAT_MS);
-  expect(extra - two).toBeLessThan(R.PVC_EXTRA_BEAT_MS + 40);
-  // every one of them, the early one included, captured the whole heart
-  const peaks = [one, two, extra].map((at) => peakWithin(log, at, 400));
-  console.log(`extra beat lesson: the excited share of the heart peaked at ${peaks.map((p) => `${(p * 100).toFixed(0)}%`).join(", ")}`);
-  for (const p of peaks) expect(p).toBeGreaterThan(0.9);
-  // and the heart was quiet again before the lesson moved on, and the pacemaker came back
-  expect(entered(log, "extra-beat", "What you just saw").excited).toBeLessThan(0.01);
-  expect((await labState(page)).pacemaker).toBe(true);
-});
-
-test("sustained tachycardia: the lab starts a wave that keeps circling after the lesson has moved on", async ({ page }) => {
-  test.setTimeout(400_000);
-  await open(page);
-  const took = await play(page, /Sustained tachycardia/);
-  const log = await readLog(page);
-  const state = await labState(page);
-  console.log(`tachycardia lesson: ${(took / 1000).toFixed(1)} s: ${path(log, "tachycardia")}; inducer ${state.inducer}`);
-  expect(state.inducer).toBe("success");
-  expect(state.tissue).toEqual(R.TACHYCARDIA_TISSUE);
-  expect(state.pacemaker).toBe(false); // the lab switched it off, as the lesson says
-  // the step that says "the wave keeps going" is shown while it does, and stays for as long as it says
-  const keeps = entered(log, "tachycardia", "A wave that keeps going");
-  expect(keeps.excited).toBeGreaterThan(S.goingAbove);
-  expect(entered(log, "tachycardia", "What you learned").at - keeps.at).toBeGreaterThanOrEqual(S.keepsGoingMs - 100);
-  const series: number[] = [];
-  for (let i = 0; i < 8; i++) {
-    await page.waitForTimeout(500);
-    series.push(await excitedNow(page));
-  }
-  console.log(`tachycardia: excited fraction over the next 4 s: ${series.map((x) => x.toFixed(2)).join(" ")}`);
-  expect(Math.min(...series)).toBeGreaterThan(0.03);
-});
-
-test("break into fibrillation: a burst of fast beats breaks into many waves that go on", async ({ page }) => {
-  test.setTimeout(400_000);
-  await open(page);
-  const took = await play(page, /Break into fibrillation/);
-  const log = await readLog(page);
-  const state = await labState(page);
-  console.log(`fibrillation lesson: ${(took / 1000).toFixed(1)} s: ${path(log, "fibrillation")}; inducer ${state.inducer}`);
-  expect(state.inducer).toBe("success");
-  expect(state.tissue).toEqual(R.FIBRILLATION_TISSUE);
-  const seeing = entered(log, "fibrillation", "What you are seeing");
-  expect(seeing.excited).toBeGreaterThan(S.goingAbove);
-  expect(entered(log, "fibrillation", "What you learned").at - seeing.at).toBeGreaterThanOrEqual(S.seeingMs - 100);
-  const series: number[] = [];
-  for (let i = 0; i < 8; i++) {
-    await page.waitForTimeout(500);
-    series.push(await excitedNow(page));
-  }
-  console.log(`fibrillation: excited fraction over the next 4 s: ${series.map((x) => x.toFixed(2)).join(" ")}`);
-  expect(Math.min(...series)).toBeGreaterThan(0.03);
-});
-
-test("shock it back: the lab sets up fibrillation, the viewer presses Shock, and the regular rhythm returns", async ({ page }) => {
-  test.setTimeout(400_000);
-  await open(page);
-  const took = await play(page, /Shock it back/);
-  const log = await readLog(page);
-  console.log(`shock lesson: ${(took / 1000).toFixed(1)} s: ${path(log, "shock")}`);
-  const before = entered(log, "shock", "Shock"); // shown when the viewer is asked to press the button
-  const after = entered(log, "shock", "What just happened");
-  expect(before.excited, "it was fibrillating when the viewer was asked to shock it").toBeGreaterThan(S.goingAbove);
-  expect(log.shocks, "the test, as the viewer, pressed Shock once").toHaveLength(1);
-  expect(after.at, "the lesson moved on because of that press, not before").toBeGreaterThanOrEqual(log.shocks[0]);
-  expect(after.excited, "and everything was still afterwards").toBeLessThan(S.quietBelow);
-  const end = await labState(page);
-  expect(end.pacemaker).toBe(true);
-  expect(end.tissue).toEqual(R.NORMAL_TISSUE);
-  // the regular beats did come back before the lesson ended, and the lesson gave none of its own
-  const back = log.beats.filter((b) => b.at > after.at && b.pacemaker);
-  console.log(`shock lesson: ${back.length} steady beats after the shock`);
-  expect(back.length).toBeGreaterThanOrEqual(2);
-});
-
-test("shock it back: the Shock step waits for the viewer, and after a while says which button to press", async ({ page }) => {
-  test.setTimeout(400_000);
-  await open(page);
-  await play(page, /Shock it back/, { until: "Shock" });
-  const stillThere = async () =>
-    page.evaluate(() => {
-      const s = (window as unknown as { __lab: Lab }).__lab.runner.state;
-      return { title: s.step?.title ?? null, finished: s.finished };
+/**
+ * How wide each beat's QRS is on the page's own ECG, in ms from its stimulus: the twelve leads' summed steepness is
+ * high while the wave spreads and falls to almost nothing in the flat stretch before the T wave. Each beat is judged
+ * up to the next stimulus in `log` (a blocked steady beat right after an early one would otherwise be counted in),
+ * from the monitor's samples (one every 4 ms of simulated time), so the stimuli must still be inside its window.
+ */
+async function qrsWidths(page: Page, log: Log, stimuli: number[]): Promise<number[]> {
+  const beats = stimuli.map((at) => ({ at, until: Math.min(at + 450, ...log.beats.filter((b) => b.at > at + 4).map((b) => b.at)) }));
+  return page.evaluate((beats) => {
+    const monitor = (window as unknown as { __lab: { monitor: { getTrace(lead: number): { t: Float32Array; v: Float32Array } } } }).__lab.monitor;
+    const leads = Array.from({ length: 12 }, (_, l) => monitor.getTrace(l));
+    const t = leads[1].t;
+    return beats.map(({ at, until }) => {
+      const idx: number[] = [];
+      for (let i = 1; i < t.length; i++) if (t[i] >= at && t[i] < until) idx.push(i);
+      if (idx.length < 20) return Number.NaN; // no longer on the monitor
+      const steep = idx.map((i) => leads.reduce((sum, lead) => sum + Math.abs(lead.v[i] - lead.v[i - 1]), 0));
+      const peakAt = steep.indexOf(Math.max(...steep));
+      const floor = 0.12 * steep[peakAt];
+      // the QRS ends where the steepness has stayed under the floor for 20 ms (five samples), or for what is left of
+      // the window when the next stimulus comes sooner (an early beat's window can close a few ms after its QRS)
+      for (let k = peakAt; k < steep.length; k++) {
+        const run = steep.slice(k, k + 5);
+        if (run.length >= 2 && run.every((s) => s < floor)) return t[idx[k]] - at;
+      }
+      return Number.NaN;
     });
-  // nothing moves the lesson on while the heart is still fibrillating
-  await page.waitForTimeout(3000);
-  expect(await stillThere()).toEqual({ title: "Shock", finished: false });
-  expect(await excitedNow(page)).toBeGreaterThan(S.goingAbove);
-  // after about twelve seconds stuck, the page shows the step's hint
-  const hint = page.locator(".hintline");
-  await expect(hint).toBeVisible({ timeout: 20_000 });
-  await expect(hint).toContainText("amber Shock button");
-  expect(await stillThere()).toEqual({ title: "Shock", finished: false });
-  // and the button really is there and does it
-  await page.getByRole("button", { name: "Shock", exact: true }).click();
-  await page.waitForFunction(() => (window as unknown as { __lab: Lab }).__lab.runner.state.step?.title === "What just happened", undefined, { timeout: 10_000 });
-  expect(await excitedNow(page)).toBe(0);
+  }, beats);
+}
+
+test("one beat: the viewer's tap, then the steady beat beside it: the tap creeps from one spot, the steady beat sweeps through the wiring", async ({ page }) => {
+  test.setTimeout(240_000);
+  await open(page);
+  await play(page, "normal-beat", { until: "Two kinds of beat" });
+  let log = await readLog(page);
+  const tapStep = entered(log, "normal-beat", "Tap the heart");
+  const steadyStep = entered(log, "normal-beat", "The steady beat");
+  const held = entered(log, "normal-beat", "Two kinds of beat");
+  // one beat, the viewer's, while the steady beat was paused; it captured the whole heart and was over before moving on
+  const tap = log.beats.filter((b) => b.at > tapStep.at && b.at < steadyStep.at);
+  expect(tap).toHaveLength(1);
+  expect(tap[0].pacemaker).toBe(false);
+  expect(peakWithin(log, tap[0].at, 800)).toBeGreaterThan(0.9);
+  expect(steadyStep.at - tap[0].at).toBeGreaterThanOrEqual(S.waveMs);
+  expect(steadyStep.excited).toBeLessThan(S.quietBelow);
+  // the ECG is held once two steady beats have been drawn beside the tap
+  const steady = log.beats.filter((b) => b.pacemaker && b.at > steadyStep.at && b.at + 150 <= held.at);
+  expect(steady.length).toBeGreaterThanOrEqual(2);
+  // and what the held step says is true on this heart's ECG: the tap drew a wide swing, the steady beats narrow spikes
+  const [tapWidth, ...steadyWidths] = await qrsWidths(page, log, [tap[0].at, ...steady.map((b) => b.at)]);
+  console.log(`one beat lesson: QRS of the tap ${tapWidth} ms, of the steady beats ${steadyWidths.join(", ")} ms`);
+  for (const w of steadyWidths) {
+    expect(w).toBeLessThanOrEqual(130);
+    expect(tapWidth).toBeGreaterThan(w + 50);
+  }
+  // the rest of the lesson, and the steady rhythm left running
+  const took = await play(page, "normal-beat", { resume: true });
+  log = await readLog(page);
+  console.log(`one beat lesson: ${(took / 1000).toFixed(1)} s more: ${path(log, "normal-beat")}`);
+  const end = await labState(page);
+  expect(end.pacemaker).toBe(true);
+  expect(end.tissue).toEqual(R.NORMAL_TISSUE);
 });
 
-test("every lesson played on the real page is one the data lists, in the order the panel shows them", async ({ page }) => {
+test("an early beat: with the steady beat running, one early beat captures, the next steady beat does nothing, and the pause follows", async ({ page }) => {
+  test.setTimeout(240_000);
   await open(page);
-  const titles = await page.locator(".lesson-list button").allInnerTexts();
-  expect(titles.map((t) => t.replace(/^\d+\s*/, "").trim())).toEqual(LESSONS.map((l) => l.title));
+  await play(page, "extra-beat", { until: "What you saw" });
+  const log = await readLog(page);
+  const early = entered(log, "extra-beat", "An early beat");
+  const saw = entered(log, "extra-beat", "What you saw");
+  const i = log.beats.findIndex((b) => b.at >= early.at - 20);
+  const [before, extra, blocked, after] = log.beats.slice(i - 1, i + 3);
+  console.log(`early beat lesson: stimuli at ${[before, extra, blocked, after].map((b) => Math.round(b.at - before.at)).join(", ")} ms`);
+  // The lesson fires it a frame or two after the moment comes (a frame is 16 to 33 ms of simulated time in real
+  // time), so it lands a little after 550 ms, and well before the next steady beat.
+  expect(extra.at - before.at).toBeGreaterThanOrEqual(R.PVC_EXTRA_BEAT_MS);
+  expect(extra.at - before.at).toBeLessThan(R.PVC_EXTRA_BEAT_MS + 120);
+  expect(peakWithin(log, extra.at, 400), "the early beat captured the heart").toBeGreaterThan(0.9);
+  // the steady beat that fell while the muscle was still resetting did nothing: the heart went quiet and stayed quiet
+  expect(Math.abs(blocked.at - before.at - PACEMAKER_PERIOD_MS)).toBeLessThan(40);
+  const lastOfEarly = log.excited.filter((x) => x.at > blocked.at + 400 && x.at < after.at);
+  expect(Math.max(0, ...lastOfEarly.map((x) => x.value)), "nothing fired between the early beat's wave and the next steady beat").toBeLessThan(S.quietBelow);
+  // and the steady beat after that captured again, two steady gaps after the one before the early beat
+  expect(Math.abs(after.at - before.at - 2 * PACEMAKER_PERIOD_MS)).toBeLessThan(40);
+  expect(peakWithin(log, after.at, 400)).toBeGreaterThan(0.9);
+  expect(saw.at, "the held steps come after the pause has been drawn").toBeGreaterThan(after.at + 200);
+  // "it started from one spot, so it drew a wide, different shape": on this heart's ECG, beside a steady beat
+  const [steadyWidth, extraWidth] = await qrsWidths(page, log, [before.at, extra.at]);
+  console.log(`early beat lesson: QRS of the steady beat ${steadyWidth} ms, of the early beat ${extraWidth} ms`);
+  expect(steadyWidth).toBeLessThanOrEqual(130);
+  expect(extraWidth).toBeGreaterThan(steadyWidth + 50);
+  // the rest of the lesson
+  const took = await play(page, "extra-beat", { readMs: 1500, resume: true });
+  console.log(`early beat lesson: ${(took / 1000).toFixed(1)} s more: ${path(await readLog(page), "extra-beat")}`);
 });
 
-// Not a check: pictures of the real ECG at the moments the lessons describe, so the words can be compared with what is
-// drawn. Other Playwright runs clear test-results/, so a second copy can be kept elsewhere by setting UI_SCREENS_DIR.
-const SCREEN_DIRS = ["test-results/screens", process.env.UI_SCREENS_DIR].filter((d): d is string => Boolean(d));
+for (const [id, kind, tissue, watchTitle, watchMs] of [
+  ["tachycardia", "racing", R.TACHYCARDIA_TISSUE, "Watch it race", S.keepsGoingMs],
+  ["fibrillation", "fibrillation", R.FIBRILLATION_TISSUE, "Watch the chaos", S.seeingMs],
+] as const) {
+  test(`${kind}: the lab starts it, the viewer watches it go on, Skip cannot pass the Shock step, and the viewer's Shock ends it`, async ({ page }) => {
+    test.setTimeout(300_000);
+    await open(page);
+    await play(page, id, { until: "Fix it" });
+    const log = await readLog(page);
+    const watch = entered(log, id, watchTitle);
+    expect(watch.excited).toBeGreaterThan(S.goingAbove);
+    expect(entered(log, id, "Fix it").at - watch.at).toBeGreaterThanOrEqual(watchMs - 100);
+    const during = await labState(page);
+    expect(during.tissue).toEqual(tissue);
+    expect(during.pacemaker).toBe(false);
+    // Skip cannot pass this step, and the rhythm does not stop by itself
+    await page.evaluate(() => (window as unknown as { __lab: Lab }).__lab.runner.next());
+    await page.waitForTimeout(2000);
+    const stuck = await page.evaluate(() => {
+      const w = window as unknown as { __lab: Lab };
+      return { title: w.__lab.runner.state.step?.title, excited: w.__lab.engine.excited };
+    });
+    expect(stuck.title).toBe("Fix it");
+    expect(stuck.excited).toBeGreaterThan(S.goingAbove);
+    // the viewer presses Shock: the whole heart fires at once, goes quiet, and the lesson moves on
+    const before = (await labState(page)).simTime;
+    await pressShock(page);
+    await page.waitForFunction(() => (window as unknown as { __lab: Lab }).__lab.runner.state.step?.title === "What you learned", undefined, { timeout: 15_000 });
+    const after = await readLog(page);
+    // How much of the heart a shock fires depends on the moment it lands (recovering muscle cannot fire), so the check
+    // is that it fired far more of it than the rhythm ever had excited at once, and that everything then went quiet.
+    const peak = peakWithin(after, before, 1000);
+    const rhythmPeak = Math.max(0, ...after.excited.filter((x) => x.at >= before - 2000 && x.at < before).map((x) => x.value));
+    console.log(`${kind}: the shock excited ${(peak * 100).toFixed(0)}% of the muscle at once; the rhythm itself at most ${(rhythmPeak * 100).toFixed(0)}%`);
+    expect(peak, "the shock fired more of the heart than the rhythm ever did").toBeGreaterThan(rhythmPeak + 0.1);
+    expect(peak).toBeGreaterThan(S.shockedAbove);
+    expect(after.excited.some((x) => x.at > before && x.at < before + 1500 && x.value < S.quietBelow), "and then everything was quiet").toBe(true);
+    const fixed = await labState(page);
+    expect(fixed.tissue).toEqual(R.NORMAL_TISSUE);
+    expect(fixed.pacemaker).toBe(true);
+  });
+}
 
-test("pictures of the real ECG at the moments the lessons describe", async ({ page }) => {
-  test.setTimeout(400_000);
+test("shock it back: the viewer's Shock ends fibrillation, the steady rhythm returns, and a Shock on it is refused", async ({ page }) => {
+  test.setTimeout(300_000);
   await open(page);
-  await page.getByRole("button", { name: "One lead" }).click();
-  const save = async (name: string) => {
-    const png = await page.locator("#monitor").screenshot();
-    for (const dir of SCREEN_DIRS) {
-      mkdirSync(dir, { recursive: true });
-      writeFileSync(`${dir}/lesson-ecg-${name}.png`, png);
-    }
-  };
-  const stop = () => page.getByRole("button", { name: "Stop", exact: true }).click();
-
-  await play(page, /Normal beat/, { until: "What you just saw" });
-  await page.waitForTimeout(300);
-  await save("1-one-normal-beat");
-  await stop();
-
-  await play(page, /An extra beat \(PVC\)/, { until: "What you just saw" });
-  await page.waitForTimeout(800);
-  await save("2-an-early-extra-beat");
-  await stop();
-
-  await play(page, /Sustained tachycardia/, { until: "A wave that keeps going" });
-  await page.waitForTimeout(4500);
-  await save("3-tachycardia");
-  await stop();
-
-  await play(page, /Break into fibrillation/, { until: "What you are seeing" });
-  await page.waitForTimeout(4000);
-  await save("4-fibrillation");
-  await stop();
-
-  await play(page, /Shock it back/, { until: "What just happened" });
-  await page.waitForTimeout(2200);
-  await save("5-after-the-shock");
+  await play(page, "shock", { until: "Try it on a steady heart", readMs: 1500 });
+  const log = await readLog(page);
+  const shock = entered(log, "shock", "Shock");
+  expect(shock.excited, "it was fibrillating when the viewer was asked to shock it").toBeGreaterThan(S.goingAbove);
+  const happened = entered(log, "shock", "What just happened");
+  expect(happened.excited, "and everything was still afterwards").toBeLessThan(S.quietBelow);
+  // the steady beat comes back by itself (1.5 s of simulated time after the shock; a busy machine runs the simulation
+  // slower than real time, so wait for it rather than for the clock on the wall)
+  await page.waitForFunction(
+    (since) => {
+      const w = window as unknown as { lessonLog: Log };
+      return w.lessonLog.beats.filter((b) => b.at > since && b.pacemaker).length >= 3;
+    },
+    happened.at,
+    { timeout: 60_000 },
+  );
+  // the rhythm analyser reads a steady, pumping heart, so the lab's AED rule refuses the shock
+  await page.waitForFunction(() => (window as unknown as { __lab: Lab }).__lab.analyzer.state.kind === "steady", undefined, { timeout: 30_000 });
+  const refused = await page.evaluate(() => {
+    const w = window as unknown as { __lab: Lab };
+    return { kind: w.__lab.analyzer.state.kind, result: w.__lab.moves.shock(w.__lab.analyzer.state) };
+  });
+  expect(refused.kind).toBe("steady");
+  expect(refused.result).toEqual({ fired: false, reason: "pumping" });
 });

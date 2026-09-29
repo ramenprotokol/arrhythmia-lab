@@ -1,248 +1,245 @@
 import { commonWgsl } from "./commonShader";
 
-// The scene pass. One full-screen pass builds the whole HDR picture front to back along each camera ray:
-//   - the room: a dark blue-teal backdrop and a floor with a pool of light under the heart
-//   - the shell, drawn earlier into a colour and depth target, met at its depth as a translucent skin
-//   - the muscle behind it (or the cut face, or the cavity walls when they are exposed), marched with
-//     emission from the voltage and absorption by the tissue, so the wave glows through the wall.
-// Empty space is crossed by sphere tracing against a distance field; inside tissue the step is fine.
+// Two draws in the heart's pass besides the surfaces.
+//   - The backdrop (vsBack, fsBack): a full-screen triangle at the far plane, drawn after the heart so it only
+//     fills what the heart leaves: a dark studio sweep, lighter behind the heart, and a floor that fades into it
+//     with a soft contact shadow under the heart.
+//   - The cut face (vsCut, fsCut), while the heart is cut open: a square on the cut plane. Where the plane passes
+//     through muscle it is the cut face, lit as fresh-cut muscle with the wave across the wall; where it passes
+//     through a cavity the ray goes on, sphere tracing the distance field to the wall beyond (the endocardium),
+//     and draws that at its own depth. The volumes are sampled where each point is at rest: the moving heart is
+//     mapped back with its mean contraction (the ventricles move with the mean while cut open, so the cut face
+//     and the surfaces agree).
 export const sceneWgsl = /* wgsl */ `
 ${commonWgsl}
 
 @group(0) @binding(3) var sdfTex: texture_3d<f32>;
-@group(0) @binding(4) var shellTex: texture_2d<f32>;
-@group(0) @binding(5) var depthTex: texture_depth_2d;
 @group(0) @binding(6) var smoothTex: texture_3d<f32>;
 
-// Outward normal of the tissue surface: minus the gradient of a wide density, which does not show the
-// voxel staircase.
+struct BackOut {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vsBack(@builtin(vertex_index) i: u32) -> BackOut {
+  let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+  var o: BackOut;
+  o.pos = vec4<f32>(p * 2.0 - 1.0, 1.0, 1.0);
+  o.uv = vec2<f32>(p.x, 1.0 - p.y);
+  return o;
+}
+
+fn viewRay(uv: vec2<f32>) -> vec3<f32> {
+  return normalize(F.fwd.xyz + F.right.xyz * ((uv.x * 2.0 - 1.0 - F.boxMin.w) * F.right.w) + F.up.xyz * ((1.0 - uv.y * 2.0 - F.floorN.w) * F.up.w));
+}
+
+@fragment
+fn fsBack(in: BackOut) -> @location(0) vec4<f32> {
+  let uv = in.uv;
+  let ro = F.eye.xyz;
+  let rd = viewRay(uv);
+  // where the heart is on the canvas
+  let hc = F.viewProj * vec4<f32>(F.scene.xyz, 1.0);
+  let heartUv = vec2<f32>(hc.x / hc.w * 0.5 + 0.5, 0.5 - hc.y / hc.w * 0.5);
+  let aspect = F.view.x / max(F.view.y, 1.0);
+  let d = (uv - heartUv - vec2<f32>(0.0, -0.03)) * vec2<f32>(aspect, 1.0);
+  let r2 = dot(d, d);
+  // a dark sweep, a soft pool of light behind the heart, cooler and dimmer toward the top of the room
+  let up = dot(rd, F.up.xyz);
+  var col = mix(vec3<f32>(0.0055, 0.0065, 0.0085), vec3<f32>(0.013, 0.016, 0.022), smoothstep(-0.2, 0.5, up));
+  col = col + vec3<f32>(0.030, 0.036, 0.044) * exp(-r2 * 2.6);
+  col = col + vec3<f32>(0.012, 0.010, 0.009) * exp(-r2 * 9.0);
+
+  // the floor: a plane under the heart that fades into the sweep, with a soft contact shadow
+  let down = dot(rd, F.floorN.xyz);
+  if (down < -0.0005) {
+    let tf = (F.scene.w - dot(ro - F.scene.xyz, F.floorN.xyz)) / down;
+    if (tf > 0.0) {
+      let q = ro + rd * tf - F.shadowC.xyz;
+      let x = dot(q, F.shadowA.xyz) / F.shadowA.w;
+      let y = dot(q, F.shadowB.xyz) / F.shadowB.w;
+      let e = x * x + y * y;
+      let shadow = exp(-e * 1.6) * 0.78 + exp(-e * 5.0) * 0.18;
+      let pool = exp(-e * 0.18);
+      var floorCol = vec3<f32>(0.010, 0.0115, 0.0135) + vec3<f32>(0.020, 0.023, 0.027) * pool;
+      floorCol = floorCol * (1.0 - shadow);
+      let fade = smoothstep(0.0, 0.25, -down) * exp(-tf / 1400.0);
+      col = mix(col, floorCol, fade);
+    }
+  }
+  return vec4<f32>(col, 1.0);
+}
+
+// ---- the cut face -------------------------------------------------------------------------------------
+
+struct CutOut {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) world: vec3<f32>,
+};
+
+@vertex
+// The square is only as big as the heart's cross-section there (the renderer measures it): the face's shader writes
+// depth, which turns off early tests, so every pixel it covers runs it.
+fn vsCut(@builtin(vertex_index) i: u32) -> CutOut {
+  let n = F.cut.xyz;
+  let helper = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(n.y) > 0.9);
+  let a = normalize(cross(n, helper));
+  let b = cross(n, a);
+  var corners = array<vec2<f32>, 6>(vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0));
+  let k = corners[i];
+  let w = n * F.cut.w + a * (F.cutQuad.x + k.x * F.cutQuad.z) + b * (F.cutQuad.y + k.y * F.cutQuad.w);
+  var o: CutOut;
+  o.pos = F.viewProj * vec4<f32>(w, 1.0);
+  o.world = w;
+  return o;
+}
+
+// Where a point of the moving heart was at rest, for mean contraction c (the squeeze gated as the surfaces are).
+fn restOf(p: vec3<f32>, c: f32) -> vec3<f32> {
+  let gate = squeezeGate(c);
+  if (gate * c < 1e-3) { return p; }
+  var r = p;
+  for (var i = 0; i < 3; i = i + 1) { r = p - beatMove(r, c) * gate; }
+  return r;
+}
+
+fn sdf(p: vec3<f32>) -> f32 {
+  return textureSampleLevel(sdfTex, lin, toUvw(p), 0.0).r * SDF_MAX;
+}
+
+// Outward normal of the tissue: minus the gradient of a wide density, which does not show the voxel staircase.
 fn tissueNormal(p: vec3<f32>) -> vec3<f32> {
   let e = 1.5 * F.vol.w;
-  let ex = vec3<f32>(e, 0.0, 0.0);
-  let ey = vec3<f32>(0.0, e, 0.0);
-  let ez = vec3<f32>(0.0, 0.0, e);
   let g = vec3<f32>(
-    textureSampleLevel(smoothTex, lin, toUvw(p + ex), 0.0).r - textureSampleLevel(smoothTex, lin, toUvw(p - ex), 0.0).r,
-    textureSampleLevel(smoothTex, lin, toUvw(p + ey), 0.0).r - textureSampleLevel(smoothTex, lin, toUvw(p - ey), 0.0).r,
-    textureSampleLevel(smoothTex, lin, toUvw(p + ez), 0.0).r - textureSampleLevel(smoothTex, lin, toUvw(p - ez), 0.0).r);
+    textureSampleLevel(smoothTex, lin, toUvw(p + vec3<f32>(e, 0.0, 0.0)), 0.0).r - textureSampleLevel(smoothTex, lin, toUvw(p - vec3<f32>(e, 0.0, 0.0)), 0.0).r,
+    textureSampleLevel(smoothTex, lin, toUvw(p + vec3<f32>(0.0, e, 0.0)), 0.0).r - textureSampleLevel(smoothTex, lin, toUvw(p - vec3<f32>(0.0, e, 0.0)), 0.0).r,
+    textureSampleLevel(smoothTex, lin, toUvw(p + vec3<f32>(0.0, 0.0, e)), 0.0).r - textureSampleLevel(smoothTex, lin, toUvw(p - vec3<f32>(0.0, 0.0, e)), 0.0).r);
   let l = length(g);
   if (l < 1e-5) { return vec3<f32>(0.0, 1.0, 0.0); }
   return -g / l;
 }
 
-// Tissue optics. Absorption per mm of full-density tissue, emission per mm, and how much of the light
-// behind the shell survives its skin.
-const SIGMA = 0.30;
-const VOL_GAIN = 0.20;
-const SHELL_OPACITY = 0.52;
-const SURFACE_OPACITY = 0.88;
-
-@vertex
-fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
-  let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
-  return vec4<f32>(p * 2.0 - 1.0, 0.0, 1.0);
-}
-
-fn rayBox(ro: vec3<f32>, rd: vec3<f32>) -> vec2<f32> {
-  let inv = 1.0 / select(rd, vec3<f32>(1e-6), abs(rd) < vec3<f32>(1e-6));
-  let a = (F.boxMin.xyz - ro) * inv;
-  let b = (F.boxMax.xyz - ro) * inv;
-  let lo = min(a, b);
-  let hi = max(a, b);
-  return vec2<f32>(max(max(lo.x, lo.y), lo.z), min(min(hi.x, hi.y), hi.z));
-}
-
-fn backdrop(ro: vec3<f32>, rd: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
-  let excite = exciteFraction();
-  // a deep blue-teal room that lightens gently behind the heart, wherever the heart is on the canvas, and
-  // more so while the heart is lit up
-  let hc = F.viewProj * vec4<f32>(F.scene.xyz, 1.0);
-  let heartUv = vec2<f32>(hc.x / hc.w * 0.5 + 0.5, 0.5 - hc.y / hc.w * 0.5);
-  let r = length((uv - heartUv - vec2<f32>(0.0, 0.02)) * vec2<f32>(1.0, 0.85));
-  var col = mix(vec3<f32>(0.016, 0.046, 0.062), vec3<f32>(0.002, 0.006, 0.010), smoothstep(0.0, 0.8, r));
-  col = col + vec3<f32>(0.004, 0.030, 0.046) * (excite * exp(-r * r * 5.0));
-  // a glossy floor under the heart: a pool of teal light that fades into the dark far away, and grows
-  // brighter and bluer with the excitation
-  let down = dot(rd, F.floorN.xyz);
-  if (down < -0.0005) {
-    let tf = (F.scene.w - dot(ro - F.scene.xyz, F.floorN.xyz)) / down;
-    if (tf > 0.0) {
-      let q = ro + rd * tf - F.scene.xyz;
-      let d = q - F.floorN.xyz * dot(q, F.floorN.xyz);
-      let pool = exp(-dot(d, d) / (2.0 * 62.0 * 62.0));
-      let ring = exp(-pow((length(d) - 92.0) / 26.0, 2.0));
-      let dist = exp(-tf / 1100.0);
-      let floorCol = vec3<f32>(0.004, 0.011, 0.016)
-        + vec3<f32>(0.017, 0.061, 0.080) * pool * (1.0 + 1.4 * excite)
-        + vec3<f32>(0.004, 0.018, 0.024) * ring * (1.0 + 2.0 * excite)
-        + vec3<f32>(0.0, 0.035, 0.060) * (pool * excite);
-      col = mix(col, floorCol, smoothstep(0.0, 0.35, -down) * dist);
-    }
-  }
-  return col;
-}
-
-// What a ray sees where it first reaches tissue that has no shell over it: the cut face, the walls of
-// the cavities, the open base. th is the ray distance of the surface, air the length already crossed
-// in empty space.
-fn surfaceHit(ro: vec3<f32>, rd: vec3<f32>, th: f32, isCut: bool, air: f32) -> vec3<f32> {
-  let ph = ro + rd * th;
-  var n = tissueNormal(ph);
-  var edge = 0.0;
-  if (isCut) {
-    n = -F.cut.xyz;
-    // the outline of the cross-section: bright where the cut plane leaves the tissue
-    edge = 1.0 - smoothstep(0.52, 0.92, density(ph));
-  }
-  if (dot(n, rd) > 0.0) { n = -n; }
-  let s = fieldCubic(ph + rd * 0.9);
-  let layer = s.b * 3.0;
-  // endo, mid and epi differ only slightly: a faint banding across the wall
-  var albedo = vec3<f32>(0.19, 0.050, 0.044);
-  albedo = albedo * (1.0 + 0.16 * (1.0 - abs(layer - 2.0)) - 0.10 * step(2.5, layer));
-  let excited = smoothstep(0.08, 0.7, s.r);
-  albedo = mix(albedo, albedo * vec3<f32>(0.30, 0.55, 0.85), excited);
-  // deeper into a cavity is darker
-  let cavity = mix(0.22, 1.0, exp(-air / 40.0));
-  // the cut face and the cavity walls are glossy too, but less: a big reflection would wash out the wave
-  var col = shadeTissue(n, -rd, albedo, 0.50, cavity, 0.40);
-  let glow = waveColour(s.r, s.g) * F.look.z;
-  col = col + glow * select(0.85, 1.15, isCut);
-  col = col + vec3<f32>(0.06, 0.42, 0.55) * (edge * edge * 0.55);
-  return col;
-}
-
-// Marches the ray between ta and tb, adding to the running colour c and transmittance t.
-// tCut is where the cut plane starts this stretch (or -1). surfFrom is the distance before which no
-// surface is drawn. inWall is true for the stretch just behind the shell: it is the wall's own glow, so
-// it ends where the ray leaves the muscle instead of running on through the cavity to the far wall.
-// cutOnly is for the stretch in front of a shell: the shell is the surface there, so the only one drawn
-// is the cut face itself.
-fn marchRange(ro: vec3<f32>, rd: vec3<f32>, ta: f32, tb: f32, jit: f32, tCut: f32, surfFrom: f32, inWall: bool, cutOnly: bool,
-              trans: ptr<function, f32>, c: ptr<function, vec3<f32>>, air: ptr<function, f32>) {
-  if (tb <= ta) { return; }
-  let dtFine = F.march.z;
-  let maxSteps = i32(F.march.y);
-  var t = ta + jit * dtFine;
-  var prevT = ta;
-  var prevIn = false;
-  var wasIn = false;
-  for (var i = 0; i < maxSteps; i = i + 1) {
-    if (t > tb || *trans < 0.015) { break; }
-    let p = ro + rd * t;
-    let s = field(p);
-    let inside = s.a > 0.5;
-    if (inWall) {
-      if (s.a > 0.3) { wasIn = true; }
-      if (wasIn && s.a < 0.06) { break; }
-    }
-
-    if (inside && !prevIn) {
-      // entered tissue between prevT and t: find the surface
-      var lo = prevT;
-      var hi = t;
-      for (var k = 0; k < 4; k = k + 1) {
-        let mid = 0.5 * (lo + hi);
-        if (density(ro + rd * mid) > 0.5) { hi = mid; } else { lo = mid; }
-      }
-      let isCut = tCut >= 0.0 && abs(hi - tCut) < 0.75 * dtFine + 0.05;
-      if (hi >= surfFrom && (isCut || !cutOnly)) {
-        let sc = surfaceHit(ro, rd, hi, isCut, *air);
-        *c = *c + *trans * sc * SURFACE_OPACITY;
-        *trans = *trans * (1.0 - SURFACE_OPACITY);
-      }
-    }
-    prevIn = inside;
-    prevT = t;
-
-    var dt = dtFine;
-    if (s.a < 0.04) {
-      // empty space: leap by the distance to the nearest muscle, less a safety margin of a voxel
-      let dAir = textureSampleLevel(sdfTex, lin, toUvw(p), 0.0).r * SDF_MAX;
-      dt = max(dtFine, 0.85 * (dAir - F.vol.w));
-      *air = *air + dt;
-    } else {
-      let sigma = SIGMA * s.a;
-      if (s.r > 0.015) {
-        // only from inside the tissue: its surface has its own emission, and the thin fringe just outside
-        // it would count the same light twice
-        let e = waveColour(s.r, s.g) * smoothstep(0.45, 0.85, s.a);
-        *c = *c + *trans * e * (VOL_GAIN * F.look.z * dt);
-      }
-      *trans = *trans * exp(-sigma * dt);
-    }
-    t = t + dt;
-  }
-}
+struct CutFrag {
+  @location(0) colour: vec4<f32>,
+  @builtin(frag_depth) depth: f32,
+};
 
 @fragment
-fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
-  let px = vec2<i32>(frag.xy);
-  let uv = frag.xy / F.view.xy;
-  let ro = F.eye.xyz;
-  let rd = normalize(F.fwd.xyz + F.right.xyz * ((uv.x * 2.0 - 1.0 - F.boxMin.w) * F.right.w) + F.up.xyz * ((1.0 - uv.y * 2.0 - F.floorN.w) * F.up.w));
-  let jit = ign(frag.xy + vec2<f32>(F.view.w * 5.588238, F.view.w * 3.1416));
-  let debug = i32(F.look.w + 0.5);
-
-  // the shell: its distance along this ray and its lit colour
-  var shellDist = 1e9;
-  var shell = vec3<f32>(0.0);
-  let dz = textureLoad(depthTex, px, 0);
-  if (dz < 1.0 && debug != 2) {
-    let zNear = F.fwd.w;
-    let zFar = F.view.z;
-    shellDist = (zNear * zFar / (zFar - dz * (zFar - zNear))) / dot(rd, F.fwd.xyz);
-    shell = textureLoad(shellTex, px, 0).rgb;
+fn fsCut(in: CutOut) -> CutFrag {
+  let eye = F.eye.xyz;
+  let rd = normalize(in.world - eye);
+  let c = meanContraction();
+  let glow = F.look.z;
+  var out: CutFrag;
+  let pr = restOf(in.world, c);
+  let s = fieldCubic(pr);
+  if (s.a > 0.5) {
+    // fresh-cut muscle: dark, wet, finely grained, with the wave running across the wall
+    var n = -F.cut.xyz;
+    if (dot(n, rd) > 0.0) { n = -n; }
+    let grain = vnoise(pr * vec3<f32>(0.9, 0.9, 0.9)) * 0.5 + vnoise(pr * 2.3 + 4.0) * 0.5;
+    let edge = 1.0 - smoothstep(0.52, 0.80, s.a);
+    var sf: Surface;
+    sf.n = normalize(n + (vnoiseD(pr * 0.8).xyz - 0.5) * 0.10);
+    sf.albedo = mix(vec3<f32>(0.16, 0.018, 0.020), vec3<f32>(0.24, 0.034, 0.034), grain);
+    sf.albedo = mix(sf.albedo, sf.albedo * vec3<f32>(0.66, 0.80, 1.15), refractory(s.r) * 0.6);
+    sf.scatter = vec3<f32>(0.9, 0.12, 0.08);
+    sf.wrap = 0.4;
+    sf.rough = 0.45;
+    sf.coat = 0.8;
+    sf.coatRough = 0.16;
+    sf.ao = 1.0 - edge * 0.35;
+    sf.thin = 0.0;
+    var col = shade(sf, -rd);
+    col = col + FRONT_CORE * (frontLight(s.r, s.g) * glow * 1.1 * (1.0 - shockFlash()));
+    col = col + vec3<f32>(0.006, 0.026, 0.050) * (refractory(s.r) * glow);
+    col = col + FLASH_COL * (shockFlash() * glow * 0.8);
+    out.colour = vec4<f32>(col, 1.0);
+    out.depth = in.pos.z;
+    return out;
   }
-  let haveShell = shellDist < 1e8;
-
-  var c = vec3<f32>(0.0);
-  var trans = 1.0;
-  var air = 0.0;
-
-  let box = rayBox(ro, rd);
-  var tA = max(box.x, 0.0);
-  var tB = box.y;
-  var tCut = -1.0;
-  let cutOn = F.march.x > 0.5;
-  if (cutOn) {
-    // keep only the far side of the plane
-    let dn = dot(rd, F.cut.xyz);
-    let s0 = dot(ro, F.cut.xyz) - F.cut.w;
-    if (abs(dn) < 1e-5) {
-      if (s0 < 0.0) { tB = -1.0; }
+  // a cavity: go on to the wall beyond
+  var t = 0.0;
+  var hit = false;
+  let steps = i32(F.march.y);
+  for (var i = 0; i < steps; i = i + 1) {
+    let q = restOf(in.world + rd * t, c);
+    if (any(q < F.boxMin.xyz) || any(q > F.boxMax.xyz)) { break; }
+    let d = sdf(q);
+    if (d < 0.9) {
+      if (density(q) > 0.5) { hit = true; break; }
+      t = t + 0.35;
     } else {
-      let tc = -s0 / dn;
-      if (dn > 0.0) {
-        if (tc > tA) { tA = tc; tCut = tc; }
-      } else {
-        tB = min(tB, tc);
-      }
+      t = t + max(0.5, 0.85 * (d - F.vol.w));
     }
+    if (t > 220.0) { break; }
   }
+  if (!hit) { discard; }
+  // refine to the surface
+  var lo = max(0.0, t - 0.6);
+  var hi = t;
+  for (var k = 0; k < 5; k = k + 1) {
+    let m = 0.5 * (lo + hi);
+    if (density(restOf(in.world + rd * m, c)) > 0.5) { hi = m; } else { lo = m; }
+  }
+  let pw = in.world + rd * hi;
+  let q = restOf(pw, c);
+  var n = tissueNormal(q);
+  if (dot(n, rd) > 0.0) { n = -n; }
+  let w = fieldCubic(q + n * -0.8);
+  var sf: Surface;
+  // the inner wall is not smooth: trabeculae, muscular ridges running roughly along the long axis, stronger toward
+  // the apex
+  let along = dot(q - F.apex.xyz, F.axis.xyz);
+  let across = q - F.axis.xyz * along;
+  let rq = across * 0.32 + F.axis.xyz * (along * 0.07);
+  let rn = vnoiseD(rq);
+  let ridge = 1.0 - abs(2.0 * rn.w - 1.0);
+  let towardApex = smoothstep(-80.0, -10.0, along);
+  let grad = rn.xyz * sign(0.5 - rn.w) * 2.0 * vec3<f32>(0.32);
+  sf.n = normalize(n - (grad - n * dot(grad, n)) * (0.35 + 0.45 * towardApex) + (vnoiseD(q * 0.9).xyz - 0.5) * 0.03);
+  sf.albedo = vec3<f32>(0.24, 0.042, 0.042) * (0.85 + 0.25 * vnoise(q * 0.2)) * (0.8 + 0.25 * ridge);
+  sf.albedo = mix(sf.albedo, sf.albedo * vec3<f32>(0.70, 0.82, 1.12), refractory(w.r) * 0.5);
+  sf.scatter = MUSCLE_SCATTER_CUT;
+  sf.wrap = 0.5;
+  sf.rough = 0.42;
+  sf.coat = 0.7;
+  sf.coatRough = 0.14;
+  // deeper in the chamber is darker
+  sf.ao = mix(0.30, 1.0, exp(-hi / 45.0));
+  sf.thin = 0.0;
+  var col = shade(sf, -rd);
+  col = col + FRONT_CORE * (frontLight(w.r, w.g) * glow * sf.ao * (1.0 - shockFlash()));
+  col = col + vec3<f32>(0.004, 0.020, 0.040) * (refractory(w.r) * glow * sf.ao);
+  col = col + FLASH_COL * (shockFlash() * glow * 0.7 * sf.ao);
+  out.colour = vec4<f32>(col, 1.0);
+  let clip = F.viewProj * vec4<f32>(pw, 1.0);
+  out.depth = clamp(clip.z / clip.w, 0.0, 1.0);
+  return out;
+}
 
-  if (debug != 1) {
-    // The stretch in front of the shell holds only tissue exposed by the cut, the open base or the
-    // cavities. Where there is a shell the shell is the surface, so march ahead of it only when the cut
-    // plane itself slices through the muscle there; otherwise the muscle is met at the shell.
-    if (!haveShell) {
-      marchRange(ro, rd, tA, tB, jit, tCut, 0.0, false, false, &trans, &c, &air);
-    } else if (cutOn && tCut >= 0.0 && density(ro + rd * (tCut + 0.3)) > 0.5) {
-      // stop a little short of the shell, which is where its own skin is drawn
-      marchRange(ro, rd, tA, min(tB, shellDist - 1.5), jit, tCut, 0.0, false, true, &trans, &c, &air);
-    }
-  }
-  if (haveShell && trans > 0.015 && shellDist >= tA - 0.5) {
-    c = c + trans * shell;
-    trans = trans * (1.0 - SHELL_OPACITY);
-    if (debug != 1) {
-      marchRange(ro, rd, shellDist, min(tB, shellDist + F.march.w), jit, -1.0, shellDist + 1.6, true, false, &trans, &c, &air);
-    }
-  }
+const MUSCLE_SCATTER_CUT = vec3<f32>(0.95, 0.16, 0.10);
 
-  // alpha is how much of the picture the heart covers, so the reflection can be kept off it
-  let coverage = 1.0 - trans;
-  c = c + trans * backdrop(ro, rd, uv);
-  return vec4<f32>(c, coverage);
+// Where the plane passes through the layer of fat over the muscle: fat in section, pale yellow and wet.
+@fragment
+fn fsCutFat(in: CutOut) -> @location(0) vec4<f32> {
+  let rd = normalize(in.world - F.eye.xyz);
+  var n = -F.cut.xyz;
+  if (dot(n, rd) > 0.0) { n = -n; }
+  let c = meanContraction();
+  let pr = restOf(in.world, c);
+  let lobe = vnoise(pr * 0.5 + 17.0) * 0.7 + vnoise(pr * 1.4) * 0.3;
+  var sf: Surface;
+  sf.n = normalize(n + (vnoiseD(pr * 0.6).xyz - 0.5) * 0.12);
+  sf.albedo = mix(vec3<f32>(0.40, 0.32, 0.16), vec3<f32>(0.50, 0.43, 0.25), lobe);
+  sf.scatter = vec3<f32>(1.0, 0.80, 0.52);
+  sf.wrap = 0.7;
+  sf.rough = 0.35;
+  sf.coat = 0.8;
+  sf.coatRough = 0.14;
+  sf.ao = 0.9;
+  sf.thin = 0.0;
+  return vec4<f32>(shade(sf, -rd), 1.0);
 }
 `;

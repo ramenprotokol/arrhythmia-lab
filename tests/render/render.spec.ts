@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { decodePng, glowFraction, isGlow, meanAbsDiff, meanLuminance, type Picture } from "./png";
+import { decodePng, isWaveLit, meanAbsDiff, meanLuminance, waveCentre, waveFraction, type Picture } from "./png";
 
 // The renderer on the real heart, in real Chrome with WebGPU. Pictures are taken from the page as the
 // user would see them, decoded here and measured. Review screenshots are written to test-results/screens.
@@ -40,43 +40,150 @@ async function fire(page: Page, ms: number) {
   }, ms);
 }
 
-test("the resting heart is drawn: not blank, sensible brightness, nothing glowing", async ({ page }) => {
+/**
+ * The picture in the renderer's flat debug view: the simulated ventricles and their vessels green, the rest of the
+ * heart (atria, great vessels, drawn but not simulated) blue.
+ */
+async function flatShot(page: Page): Promise<Picture> {
+  await page.evaluate(() => (window.renderLab.renderer.look.debug = 6));
+  const img = await shot(page);
+  await page.evaluate(() => (window.renderLab.renderer.look.debug = 0));
+  return img;
+}
+const isVentricle = (img: Picture, i: number) => img.data[i + 1] > 150 && img.data[i + 1] > img.data[i] + 80 && img.data[i + 1] > img.data[i + 2] + 80;
+const isRestOfHeart = (img: Picture, i: number) => img.data[i + 2] > 150 && img.data[i + 2] > img.data[i] + 80 && img.data[i + 2] > img.data[i + 1] + 80;
+
+test("the resting heart is drawn: not blank, sensible brightness, the whole heart there, still", async ({ page }) => {
   await open(page);
   const img = await shot(page, "desktop-1-rest");
   const lum = meanLuminance(img);
-  console.log(`rest: mean luminance ${lum.toFixed(1)}, glow ${(glowFraction(img) * 100).toFixed(4)}%`);
-  expect(lum).toBeGreaterThan(8);
-  expect(lum).toBeLessThan(120);
-  expect(glowFraction(img)).toBe(0);
   // the heart is really there: a good share of the picture is warm, reddish tissue
   let tissue = 0;
   for (let i = 0; i < img.data.length; i += 4) if (img.data[i] > 60 && img.data[i] > 1.5 * img.data[i + 1]) tissue++;
-  expect(tissue / (img.width * img.height)).toBeGreaterThan(0.05);
+  // and it is a whole heart: the ventricles, and the atria and great vessels over them
+  const flat = await flatShot(page);
+  let ventricles = 0, rest = 0;
+  for (let i = 0; i < flat.data.length; i += 4) {
+    if (isVentricle(flat, i)) ventricles++;
+    else if (isRestOfHeart(flat, i)) rest++;
+  }
+  const px = img.width * img.height;
+  console.log(`rest: mean luminance ${lum.toFixed(1)}, tissue ${((100 * tissue) / px).toFixed(1)}%; ventricles ${((100 * ventricles) / px).toFixed(1)}%, the rest of the heart ${((100 * rest) / px).toFixed(1)}%`);
+  expect(lum).toBeGreaterThan(8);
+  expect(lum).toBeLessThan(120);
+  expect(tissue / px).toBeGreaterThan(0.05);
+  expect(ventricles / px).toBeGreaterThan(0.08);
+  expect(rest / px).toBeGreaterThan(0.01);
+  // nothing fires, so nothing moves: two frames apart are the same but for film grain
+  const again = await shot(page);
+  expect(meanAbsDiff(img, again)).toBeLessThan(1.5);
+  expect(await page.evaluate(() => window.renderLab.renderer.meanContraction)).toBe(0);
 });
 
-test("60 ms after a stimulus the excited tissue glows", async ({ page }) => {
+test("60 ms after a stimulus the wavefront lights the muscle", async ({ page }) => {
   await open(page);
   const rest = await shot(page);
   await fire(page, 60);
   const img = await shot(page, "desktop-2-after-60ms");
-  const g = glowFraction(img);
-  console.log(`after 60 ms: glow ${(g * 100).toFixed(2)}% of the picture, mean luminance ${meanLuminance(img).toFixed(1)}`);
-  expect(glowFraction(rest)).toBe(0);
-  expect(g).toBeGreaterThan(0.01);
-  expect(meanLuminance(img)).toBeGreaterThan(meanLuminance(rest) + 3);
+  const g = waveFraction(img, rest);
+  console.log(`after 60 ms: ${(g * 100).toFixed(2)}% of the picture lit by the wave, mean luminance ${meanLuminance(rest).toFixed(1)} -> ${meanLuminance(img).toFixed(1)}`);
+  expect(g).toBeGreaterThan(0.002);
+  // a line of light, not a flood: the excited muscle is not painted over
+  expect(g).toBeLessThan(0.08);
 });
 
-test("two frames a few milliseconds of simulated time apart differ", async ({ page }) => {
+test("two frames a few milliseconds of simulated time apart differ: the front has moved", async ({ page }) => {
   await open(page);
+  const rest = await shot(page);
   await fire(page, 60);
   const a = await shot(page);
   await page.evaluate(() => window.renderLab.play(12));
   const b = await shot(page);
   const d = meanAbsDiff(a, b);
-  console.log(`60 ms vs 72 ms: mean difference ${d.toFixed(2)} of 255`);
+  const ca = waveCentre(a, rest), cb = waveCentre(b, rest);
+  console.log(`60 ms vs 72 ms: mean difference ${d.toFixed(2)} of 255; the lit band's middle moved from ${ca?.map((v) => v.toFixed(0))} to ${cb?.map((v) => v.toFixed(0))}`);
   expect(d).toBeGreaterThan(1);
-  // the wave has spread: more of the picture glows
-  expect(glowFraction(b)).toBeGreaterThan(glowFraction(a));
+  expect(ca).not.toBeNull();
+  expect(cb).not.toBeNull();
+  expect(Math.hypot(cb![0] - ca![0], cb![1] - ca![1])).toBeGreaterThan(3);
+});
+
+test("the heart beats: it contracts while the muscle is excited, relaxes after, and pinned points move with it", async ({ page }) => {
+  await open(page);
+  const r = await page.evaluate(async () => {
+    const lab = window.renderLab;
+    const rd = lab.renderer;
+    const pins = () => ({ apex: rd.project(lab.frame.apexVoxel), base: rd.project(lab.frame.baseVoxel) });
+    const still = pins();
+    // a beat paced like the app at its usual speed: a few milliseconds of simulated time per displayed frame
+    lab.sim.stimulate(lab.apex, 3);
+    let peak = 0;
+    let atPeak = still;
+    for (let i = 0; i < 90; i++) {
+      lab.sim.step(4.2);
+      await lab.draw();
+      if (rd.meanContraction > peak) {
+        peak = rd.meanContraction;
+        atPeak = pins();
+      }
+    }
+    for (let i = 0; i < 150; i++) {
+      lab.sim.step(4.2);
+      await lab.draw();
+    }
+    return { still, atPeak, peak, after: rd.meanContraction };
+  });
+  const moved = (a: { x: number; y: number }, b: { x: number; y: number }) => Math.hypot(a.x - b.x, a.y - b.y);
+  console.log(`beat: peak contraction ${r.peak.toFixed(2)}, afterwards ${r.after.toFixed(3)}; at the peak the base moved ${moved(r.still.base, r.atPeak.base).toFixed(1)} px, the apex ${moved(r.still.apex, r.atPeak.apex).toFixed(1)} px`);
+  expect(r.peak).toBeGreaterThan(0.6);
+  expect(r.after).toBeLessThan(0.05);
+  // the base descends toward the apex; the apex hardly moves
+  expect(moved(r.still.base, r.atPeak.base)).toBeGreaterThan(10);
+  expect(moved(r.still.apex, r.atPeak.apex)).toBeLessThan(5);
+});
+
+test("a whole-heart shock flashes the heart warm and holds it still, then everything recovers together", async ({ page }) => {
+  await open(page);
+  const rest = await shot(page);
+  const r = await page.evaluate(async () => {
+    const lab = window.renderLab;
+    const rd = lab.renderer;
+    const base = () => rd.project(lab.frame.baseVoxel);
+    const still = base();
+    // every muscle cell at once, as the person's Shock does; then run like the app at real time
+    lab.sim.stimulate(rd.focus.map(Math.round) as [number, number, number], 400);
+    let moved = 0;
+    for (let i = 0; i < 4; i++) {
+      lab.sim.step(16);
+      await lab.draw();
+      const b = base();
+      moved = Math.max(moved, Math.hypot(b.x - still.x, b.y - still.y));
+    }
+    return { moved, contraction: rd.meanContraction };
+  });
+  const flash = await shot(page, "desktop-7-shock-flash");
+  const after = await page.evaluate(async () => {
+    const lab = window.renderLab;
+    for (let i = 0; i < 70; i++) {
+      lab.sim.step(16);
+      await lab.draw();
+    }
+    return lab.renderer.meanContraction;
+  });
+  const back = await shot(page);
+  // warmer: red up more than blue
+  const mean = (img: Picture, c: number) => {
+    let sum = 0;
+    for (let i = c; i < img.data.length; i += 4) sum += img.data[i];
+    return sum / (img.data.length / 4);
+  };
+  console.log(`shock: base moved ${r.moved.toFixed(1)} px while the whole heart was contracted (${r.contraction.toFixed(2)}); red ${mean(rest, 0).toFixed(1)} -> ${mean(flash, 0).toFixed(1)}, blue ${mean(rest, 2).toFixed(1)} -> ${mean(flash, 2).toFixed(1)}; a second later contraction ${after.toFixed(3)}, difference from rest ${meanAbsDiff(rest, back).toFixed(2)}`);
+  expect(r.contraction).toBeGreaterThan(0.6);
+  expect(r.moved).toBeLessThan(2); // no squeeze from a shock: the heart is held still
+  expect(mean(flash, 0) - mean(rest, 0)).toBeGreaterThan(4);
+  expect(mean(flash, 0) - mean(rest, 0)).toBeGreaterThan(mean(flash, 2) - mean(rest, 2));
+  expect(after).toBeLessThan(0.02);
+  expect(meanAbsDiff(rest, back)).toBeLessThan(3);
 });
 
 test("a phone-sized screen renders the heart, sharply and not blank", async ({ browser }) => {
@@ -88,17 +195,17 @@ test("a phone-sized screen renders the heart, sharply and not blank", async ({ b
     const rest = await shot(page);
     await fire(page, 70);
     const img = await shot(page, "phone-after-70ms");
-    console.log(`phone: backing store ${size.join("x")}, glow ${(glowFraction(img) * 100).toFixed(2)}%`);
+    console.log(`phone: backing store ${size.join("x")}, ${(waveFraction(img, rest) * 100).toFixed(2)}% lit by the wave`);
     expect(size).toEqual([780, 1688]);
     expect(img.width).toBe(780);
     expect(meanLuminance(rest)).toBeGreaterThan(5);
-    expect(glowFraction(img)).toBeGreaterThan(0.01);
-    // the heart fills a good part of the width: tissue or glow reaches across the middle band
+    expect(waveFraction(img, rest)).toBeGreaterThan(0.001);
+    // the heart fills a good part of the width: tissue or the wave reaches across the middle band
     let leftmost = img.width, rightmost = 0;
     for (let y = Math.floor(img.height * 0.3); y < Math.floor(img.height * 0.6); y++)
       for (let x = 0; x < img.width; x++) {
         const i = (y * img.width + x) * 4;
-        if (isGlow(img.data[i], img.data[i + 1], img.data[i + 2]) || (img.data[i] > 60 && img.data[i] > 1.5 * img.data[i + 1])) {
+        if (isWaveLit(img, rest, i) || (img.data[i] > 60 && img.data[i] > 1.5 * img.data[i + 1])) {
           leftmost = Math.min(leftmost, x);
           rightmost = Math.max(rightmost, x);
         }
@@ -113,6 +220,8 @@ test("a phone-sized screen renders the heart, sharply and not blank", async ({ b
 
 test("the cutaway shows a different picture from the whole heart", async ({ page }) => {
   await open(page);
+  // the cut is what is compared here: hold the heart still, so its beat does not move it between the pictures
+  await page.evaluate(() => (window.renderLab.renderer.look.beat = 0));
   await fire(page, 60);
   const whole = await shot(page);
   await page.evaluate(() => window.renderLab.renderer.setCutaway(true, 0));
@@ -152,11 +261,11 @@ test("the cutaway shows a different picture from the whole heart", async ({ page
   expect(meanAbsDiff(whole, back)).toBeLessThan(4);
 });
 
-test("pick finds the muscle voxel under a pixel, and nothing outside the heart", async ({ page }) => {
+test("pick finds the muscle voxel under a pixel of the ventricles, and nothing on the atria or outside the heart", async ({ page }) => {
   await open(page);
-  const img = await shot(page);
+  const flat = await flatShot(page);
   const r = await page.evaluate(
-    ({ w, h, pixels }) => {
+    ({ w, h, pixels, others }) => {
       const lab = window.renderLab;
       let hits = 0, muscle = 0;
       for (const [x, y] of pixels) {
@@ -166,21 +275,24 @@ test("pick finds the muscle voxel under a pixel, and nothing outside the heart",
           if (lab.grid.tissue[v[0] + lab.grid.nx * (v[1] + lab.grid.ny * v[2])] > 0) muscle++;
         }
       }
-      return { hits, muscle, corner: lab.renderer.pick(2, 2), farCorner: lab.renderer.pick(w - 3, h - 3) };
+      // the atria and great vessels are drawn, not simulated: a tap there fires nothing
+      const blocked = others.filter(([x, y]) => lab.renderer.pick(x, y) === null).length;
+      return { hits, muscle, blocked, corner: lab.renderer.pick(2, 2), farCorner: lab.renderer.pick(w - 3, h - 3) };
     },
-    { w: img.width, h: img.height, pixels: samplePixels(img, (r, g) => r > 60 && r > 1.8 * g, 200) },
+    { w: flat.width, h: flat.height, pixels: sampleWhere(flat, (i) => isVentricle(flat, i), 200), others: sampleWhere(flat, (i) => isRestOfHeart(flat, i), 100) },
   );
-  console.log(`pick: ${r.hits} of 200 tissue-coloured pixels hit muscle, ${r.muscle} of them muscle voxels`);
+  console.log(`pick: ${r.hits} of 200 ventricle pixels hit muscle, ${r.muscle} of them muscle voxels; ${r.blocked} of 100 pixels on the rest of the heart pick nothing`);
   expect(r.muscle).toBe(r.hits);
   expect(r.hits).toBeGreaterThan(190);
+  expect(r.blocked).toBeGreaterThan(90);
   expect(r.corner).toBeNull();
   expect(r.farCorner).toBeNull();
 });
 
 test("pick follows the cutaway: only what is left of the heart can be picked", async ({ page }) => {
   await open(page);
-  const img = await shot(page);
-  const pixels = samplePixels(img, (r, g) => r > 60 && r > 1.8 * g, 300);
+  const flat = await flatShot(page);
+  const pixels = sampleWhere(flat, (i) => isVentricle(flat, i), 300);
   const r = await page.evaluate((pixels) => {
     const renderer = window.renderLab.renderer;
     const at = () => pixels.map(([x, y]) => renderer.pick(x, y));
@@ -205,7 +317,8 @@ test("pick follows the cutaway: only what is left of the heart can be picked", a
     };
   }, pixels);
   console.log(`pick with the cut: ${r.n} pixels; whole ${r.wholeHits} hits; cut -1 gives the same voxel for ${r.barelySame}; cut 0 for ${r.middleSame} (${r.middleHits} hits); cut +1 hits ${r.goneHits}; cut off again same for ${r.backSame}`);
-  expect(r.wholeHits).toBe(r.n);
+  // (a pixel on the rim of the silhouette may be fat just outside the muscle)
+  expect(r.wholeHits).toBeGreaterThanOrEqual(r.n * 0.97);
   expect(r.barelySame).toBe(r.n); // -1 removes nothing
   expect(r.goneHits).toBe(0); // +1 removes everything
   expect(r.middleSame).toBeLessThan(r.n * 0.2); // 0 removes the near half: the ray goes on to what is behind
@@ -216,8 +329,9 @@ test("pick follows the cutaway: only what is left of the heart can be picked", a
 test("pacing at a picked pixel lights that place on the screen", async ({ page }) => {
   await open(page);
   const img = await shot(page);
-  // the middle of the visible tissue
-  const pts = samplePixels(img, (r, g) => r > 60 && r > 1.8 * g, 4000);
+  // the middle of the visible ventricles
+  const flat = await flatShot(page);
+  const pts = sampleWhere(flat, (i) => isVentricle(flat, i), 4000);
   const cx = Math.round(pts.reduce((s, p) => s + p[0], 0) / pts.length);
   const cy = Math.round(pts.reduce((s, p) => s + p[1], 0) / pts.length);
   const at = await page.evaluate(
@@ -237,13 +351,14 @@ test("pacing at a picked pixel lights that place on the screen", async ({ page }
   for (let y = 0; y < lit.height; y++)
     for (let x = 0; x < lit.width; x++) {
       const i = (y * lit.width + x) * 4;
-      if (!isGlow(lit.data[i], lit.data[i + 1], lit.data[i + 2])) continue;
+      if (!isWaveLit(lit, img, i)) continue;
       if (Math.hypot(x - cx, y - cy) < 90) near++;
       else if (Math.hypot(x - cx, y - cy) > 260) far++;
     }
-  console.log(`paced at pixel (${cx}, ${cy}) = voxel ${at}: ${near} glowing pixels within 90 px, ${far} beyond 260 px`);
+  console.log(`paced at pixel (${cx}, ${cy}) = voxel ${at}: ${near} pixels lit by the wave within 90 px, ${far} beyond 260 px`);
   expect(near).toBeGreaterThan(300);
-  expect(far).toBe(0);
+  // nothing lights up far away (a stray glint that shifts as the muscle near the spot tightens is not the wave)
+  expect(far).toBeLessThan(25);
 });
 
 // ---- project(): pinning labels to the heart ------------------------------------------------------------
@@ -267,8 +382,8 @@ test("project pins the anatomy to the canvas: apex low and to the right, base hi
 
 test("project agrees with pick, hides what the heart hides, and follows the cut", async ({ page }) => {
   await open(page);
-  const img = await shot(page);
-  const pixels = samplePixels(img, (r, g) => r > 60 && r > 1.8 * g, 200);
+  const flat = await flatShot(page);
+  const pixels = sampleWhere(flat, (i) => isVentricle(flat, i), 200);
   const r = await page.evaluate((pixels) => {
     const rd = window.renderLab.renderer;
     // every picked voxel projects back to about the pixel it was picked at, and is visible
@@ -316,6 +431,8 @@ test("project agrees with pick, hides what the heart hides, and follows the cut"
 
 test("panels over the canvas: the heart is fitted to the free area and centred in it", async ({ page }) => {
   await open(page);
+  // the framing is what is tested here: hold the heart still, so a beat does not move the points projected
+  await page.evaluate(() => (window.renderLab.renderer.look.beat = 0));
   await fire(page, 70);
   const W = 1440, H = 900;
   const r = await page.evaluate(() => {
@@ -346,14 +463,14 @@ test("panels over the canvas: the heart is fitted to the free area and centred i
     expect(Math.hypot(v![0] - r.focus[0], v![1] - r.focus[1], v![2] - r.focus[2])).toBeLessThan(65);
   }
 
-  // the picture: the heart sits inside the free rectangle, with a little margin, near its middle
+  // the picture: the whole heart sits inside the free rectangle, with a little margin, near its middle
   const img = await shot(page, "desktop-5-panels-right404-bottom300");
+  const flat = await flatShot(page);
   let x0 = W, x1 = 0, y0 = H, y1 = 0;
-  for (let y = 0; y < img.height; y++)
-    for (let x = 0; x < img.width; x++) {
-      const i = (y * img.width + x) * 4;
-      const [pr, pg, pb] = [img.data[i], img.data[i + 1], img.data[i + 2]];
-      if (isGlow(pr, pg, pb) || (pr > 60 && pr > 1.5 * pg)) {
+  for (let y = 0; y < flat.height; y++)
+    for (let x = 0; x < flat.width; x++) {
+      const i = (y * flat.width + x) * 4;
+      if (isVentricle(flat, i) || isRestOfHeart(flat, i)) {
         x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
       }
     }
@@ -368,7 +485,7 @@ test("panels over the canvas: the heart is fitted to the free area and centred i
   // the canvas itself is still full-bleed: the room fills the covered part too
   let dark = 0;
   for (let y = H - 250; y < H - 50; y += 10) for (let x = W - 380; x < W - 20; x += 10) dark += img.data[(y * img.width + x) * 4 + 2] > 8 ? 1 : 0;
-  expect(dark).toBeGreaterThan(200); // the backdrop's teal is there, behind where the panels would be
+  expect(dark).toBeGreaterThan(200); // the backdrop is there, behind where the panels would be
 
   // a tap at that spot is reported at those canvas pixels, and picks the same voxel
   const tapped = await page.evaluate(() => {
@@ -542,9 +659,10 @@ test("the foot of a second front still counts as rising where the tissue has jus
     lab.sim.stimulate(lab.apex, 3);
     lab.play(300); // the first wave crosses and the heart recovers, every voxel remembered as falling
     const first = await lab.renderer.readField();
+    // the fourth channel is the smoothed tissue density: above a half is inside the muscle
     let remembered = 0, resting = 0;
     for (let i = 0; i < first.length; i += 4)
-      if (first[i + 2] > 0 && Math.abs(first[i]) < 0.1) {
+      if (first[i + 3] > 0.5 && Math.abs(first[i]) < 0.1) {
         resting++;
         if (first[i + 1] < -0.005) remembered++;
       }
@@ -554,7 +672,7 @@ test("the foot of a second front still counts as rising where the tissue has jus
     // the foot of the front: the voltage climbing, not yet at the dome
     let foot = 0, rising = 0;
     for (let i = 0; i < f.length; i += 4)
-      if (f[i + 2] > 0 && f[i] > 0.1 && f[i] < 0.9) {
+      if (f[i + 3] > 0.5 && f[i] > 0.1 && f[i] < 0.9) {
         foot++;
         if (f[i + 1] > 0.3) rising++;
       }
@@ -627,7 +745,7 @@ test("resize follows the device pixel ratio and caps the backing store", async (
     const size = () => [lab.canvas.width, lab.canvas.height];
     lab.renderer.resize(1440, 900, 1);
     out.dpr1 = size();
-    lab.renderer.resize(1440, 900, 2); // 2880 x 1800 = 5.2 MP wanted, the high tier allows 4 MP
+    lab.renderer.resize(1440, 900, 2); // 2880 x 1800 = 5.2 MP wanted, the high tier draws at most 2.6 MP (sharpened)
     out.dpr2 = size();
     lab.renderer.resize(390, 844, 3); // a ratio of 3 is capped at 2
     out.phone = size();
@@ -641,8 +759,8 @@ test("resize follows the device pixel ratio and caps the backing store", async (
     return out;
   });
   expect(sizes.dpr1).toEqual([1440, 900]);
-  expect(sizes.dpr2[0] * sizes.dpr2[1]).toBeLessThanOrEqual(4_000_000);
-  expect(sizes.dpr2[0] * sizes.dpr2[1]).toBeGreaterThan(3_800_000);
+  expect(sizes.dpr2[0] * sizes.dpr2[1]).toBeLessThanOrEqual(2_600_000);
+  expect(sizes.dpr2[0] * sizes.dpr2[1]).toBeGreaterThan(2_450_000);
   expect(sizes.dpr2[0] / sizes.dpr2[1]).toBeCloseTo(1.6, 1);
   expect(sizes.phone).toEqual([780, 1688]);
   expect(sizes.low).toEqual([750, 450]);
@@ -655,8 +773,7 @@ for (const tier of ["low", "medium", "high"]) {
     await fire(page, 60);
     const img = await shot(page, `tier-${tier}`);
     expect(meanLuminance(rest)).toBeGreaterThan(8);
-    expect(glowFraction(rest)).toBe(0);
-    expect(glowFraction(img)).toBeGreaterThan(0.01);
+    expect(waveFraction(img, rest)).toBeGreaterThan(0.002);
   });
 }
 
@@ -724,13 +841,13 @@ test("frame time at 1440x900 with the solver running", async ({ page }) => {
   expect(r.rendererOnly.mean).toBeLessThan(8);
 });
 
-/** Up to n canvas pixels, evenly spread through the picture, that pass a test on their red and green. */
-function samplePixels(img: Picture, keep: (r: number, g: number) => boolean, n: number): [number, number][] {
+/** Up to n canvas pixels, evenly spread through the picture, that pass a test (given the pixel's byte offset). */
+function sampleWhere(img: Picture, keep: (i: number) => boolean, n: number): [number, number][] {
   const all: [number, number][] = [];
   for (let y = 0; y < img.height; y += 3)
     for (let x = 0; x < img.width; x += 3) {
       const i = (y * img.width + x) * 4;
-      if (keep(img.data[i], img.data[i + 1])) all.push([x, y]);
+      if (keep(i)) all.push([x, y]);
     }
   const step = Math.max(1, Math.floor(all.length / n));
   return all.filter((_, i) => i % step === 0).slice(0, n);

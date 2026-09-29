@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { deflateSync } from "node:zlib";
-import { decodePng, glowFraction, meanLuminance } from "./png";
+import { decodePng, meanLuminance, waveFraction } from "./png";
 
 // A tiny PNG writer for the tests: 8-bit RGBA, every row filtered with the given filter type.
 function crc32(buf: Uint8Array): number {
@@ -105,11 +105,13 @@ describe("image statistics", () => {
     expect(meanLuminance(solid(255, 0, 0))).toBeCloseTo(0.2126 * 255, 3);
   });
 
-  it("counts saturated bright cyan as glow, and nothing else", () => {
-    expect(glowFraction(solid(30, 200, 230))).toBe(1); // electric cyan
-    expect(glowFraction(solid(110, 49, 44))).toBe(0); // resting tissue
-    expect(glowFraction(solid(250, 240, 235))).toBe(0); // a white highlight
-    expect(glowFraction(solid(6, 28, 40))).toBe(0); // the dark blue room
-    expect(glowFraction(solid(150, 190, 210))).toBe(0); // a pale reflection
+  it("counts a pixel as lit by the wave when it turns much bluer than at rest, and nothing else", () => {
+    const tissue = solid(110, 30, 28);
+    expect(waveFraction(solid(190, 235, 255), tissue)).toBe(1); // the front: blue-white over red muscle
+    expect(waveFraction(solid(60, 110, 170), tissue)).toBe(1); // its bloom
+    expect(waveFraction(tissue, tissue)).toBe(0); // nothing changed
+    expect(waveFraction(solid(250, 240, 235), tissue)).toBe(0); // a white highlight moved onto it
+    expect(waveFraction(solid(95, 26, 30), tissue)).toBe(0); // the faint tint of excited muscle
+    expect(waveFraction(solid(150, 190, 210), solid(6, 28, 40))).toBe(0); // a pale reflection over the dark room
   });
 });

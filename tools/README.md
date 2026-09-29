@@ -10,8 +10,8 @@ python3 -m venv ~/heart-data/venv
 ~/heart-data/venv/bin/pip install numpy scipy meshio scikit-image trimesh fast-simplification
 tools/fetch_heart.sh                     # ~700 MB, resumable; default archive 23.tar.gz
 curl -sL https://zenodo.org/api/records/3890034 -o ~/heart-data/record.json   # credit metadata
-~/heart-data/venv/bin/python tools/build_heart.py
-npx vitest run tests/data/heart-format.test.ts
+~/heart-data/venv/bin/python tools/build_heart.py                  # add --surfaces-only to keep heart.bin as it is
+npx vitest run tests/data/heart-format.test.ts tests/render/anatomy.test.ts
 ~/heart-data/venv/bin/python tools/build_frame.py     # anatomical frame for the ECG, see "Heart frame" below
 npx vitest run tests/data/heart-frame.test.ts
 ```
@@ -69,10 +69,30 @@ int32 part number, 80-byte block name (`tetra4` or `coordinates`), then float32 
    - septum (both faces touch blood, no epicardium between them: the farther cavity is closer
      than the epicardium): u = dNear / (dNear + dFar), 0 on either septal face, 0.5 mid-septum;
      u < 0.25 endo, else mid. The septum therefore has endocardium on both sides and no epi.
-6. Outer surface: the epicardial triangles, oriented outward, Taubin-smoothed (20 iterations),
-   quadric-decimated to 40,000 triangles, vertex normals recomputed. It is open at the base
-   (where the atria were), about 300 boundary edges. Coordinates are shifted into the grid frame.
-7. `credits.json` is written from the Zenodo record metadata (`record.json`).
+6. Outer surfaces (also the whole of `--surfaces-only`, which leaves heart.bin untouched): every tet
+   of the mesh, whatever its tag, is rasterised at 0.5 mm; the empty space reachable from outside is
+   flood filled, so the four chambers count as solid (tissue 243 ml, with the chambers 728 ml);
+   marching cubes on that solid (Gaussian 0.7 voxel) gives one closed surface of the whole heart. The
+   aorta and pulmonary trunk are open tubes in the data, so their lumens stay open down to the valve
+   planes. The surface is Taubin-smoothed (40 iterations) and every face takes the part of the tissue
+   under it (majority of its corners, then a neighbour majority filter and no islands under 200 faces):
+   ventricles (tags 1, 2), left atrium (3), right atrium (4), aorta (5), pulmonary artery (6), veins
+   (7-13: rings of the four pulmonary vein stumps, the left atrial appendage and the two caval veins, as
+   the dataset labels them) and caps (14-24: the valve planes and the planes that close those stumps).
+   It is decimated jointly to 320,000 triangles, split into the ventricles and the rest, and each is
+   decimated on its own to 52,000 and 28,000 triangles with its border held fixed, so the two share
+   their seam vertex for vertex (956 vertices). Normals come from the joined surface, so shading is
+   continuous across the seam. The simplifier does not check the link condition: one edge on a thin
+   vessel rim ends up shared by four faces, which draws fine; the build checks that no edge is open.
+   Baked per vertex: ambient occlusion (64 cosine-weighted rays marched through the filled volume, 35 mm
+   reach, a hit counting less the farther it is), concavity (minus the mean curvature of the dense
+   surface, cotangent Laplacian, averaged over about a millimetre, creases capped at 0.5 per mm), and on
+   the ventricles the signed distance along the surface to the interventricular grooves (the zero line
+   of the UVC intraventricular label, smoothed; negative on the LV side) and the distance from the base
+   (the seam). Coordinates are shifted into the grid frame.
+7. `credits.json` gets the heart dataset's credit from the Zenodo record metadata (`record.json`), merged into
+   the file: the script owns only the fields listed below and keeps every other entry (credits other parts of the
+   project add, such as recordings and fonts).
 
 ## Binary formats (little-endian; `tests/data/heart-format.test.ts` checks them)
 
@@ -117,18 +137,43 @@ This heart: 125 x 106 x 117, voxel 1.0 mm, 6,201,020 bytes; 182,253 muscle voxel
 | 12 + 24V | uint32 x I | triangle vertex indices, counter-clockwise seen from outside |
 
 Total size = 12 + 24 V + 4 I. All offsets are multiples of 4, so typed-array views are aligned.
-This heart: V = 20,167, I = 120,000 (40,000 triangles), 964,020 bytes.
+This heart: V = 26,479, I = 156,000 (52,000 triangles), 1,259,508 bytes. The surface is open only
+along its seam with the rest of the heart (the atrioventricular junction and the roots of the aorta
+and pulmonary trunk), whose outer surface is in `heart-anatomy.bin`.
+
+### `public/data/heart-anatomy.bin` (magic `ANA1`; `tests/render/anatomy.test.ts` checks it)
+
+| offset | type | meaning |
+|---|---|---|
+| 0 | 4 x uint8 | ASCII `ANA1` |
+| 4 | uint32 | V, the vertexCount of `heart-surface.bin` (the records below follow its vertex order) |
+| 8 | uint32 | E, vertices of the rest of the heart |
+| 12 | uint32 | EI, its index count (multiple of 3) |
+| 16 | int16 x 4V | per ventricle vertex: groove (0.1 mm), base (0.1 mm), ao (x 32767), concavity (per mm x 10000) |
+| 16 + 8V | float32 x 3E | positions of the rest, grid frame |
+| 16 + 8V + 12E | int8 x 4E | its unit outward normals x 127 (x, y, z, unused) |
+| 16 + 8V + 16E | uint8 x 4E | part, distance from the ventricular muscle (mm, capped at 255), ao (x 255), 128 + concavity x 400 |
+| 16 + 8V + 20E | uint32 x EI | triangle indices, counter-clockwise seen from outside |
+
+groove is the signed distance along the surface to the interventricular grooves (negative on the LV
+side), base the distance along the surface from the seam, ao 0 shut in to 1 open, concavity positive in
+grooves and creases. part is 1 left atrium, 2 right atrium, 3 aorta, 4 pulmonary artery, 5 veins, 6 cap;
+a vertex on a border between parts is stored once per part, so every triangle has a single part. The rest
+of the heart is drawn but not simulated. Total size = 16 + 8V + 20E + 4EI. This heart: E = 15,413,
+EI = 84,000 (28,000 triangles), 856,108 bytes.
 
 ### Shared coordinate frame
 
-Both files are in millimetres with the origin at the grid's minimum corner, axes as in the source
+All three files are in millimetres with the origin at the grid's minimum corner, axes as in the source
 mesh (no rotation, so fibre vectors need no transformation). A vertex at `(px, py, pz)` sits at voxel
 coordinate `p / voxelSizeMm`. The dataset frame origin of the grid corner was
 (-43.84, 70.25, 36.57) mm (informational only; nothing else needs it).
 
 ### `public/data/credits.json`
 
-`{ title, authors[], licence: "CC BY 4.0", url, doi, note }`, copied from the Zenodo record metadata.
+`{ title, authors[], licence: "CC BY 4.0", url, doi, note, ... }`: the first six fields are the heart dataset's,
+written from the Zenodo record metadata by `build_heart.py` (its `CREDIT_FIELDS`); anything else in the file belongs
+to other parts of the project and a rebuild leaves it as it is.
 
 ## Limits worth knowing
 
@@ -136,7 +181,9 @@ coordinate `p / voxelSizeMm`. The dataset frame origin of the grid corner was
   a patient-specific model of anyone using the site.
 - Fibres are the dataset authors' rule-based fibres, not measured.
 - Layer thirds are a simple geometric rule; real endo/mid/epi cell types do not follow exact thirds.
-- The ventricles are not closed at the base; there are no atria, valves or vessels in the data.
+- Only the ventricles are simulated. The atria and the stumps of the great vessels and veins are drawn from
+  the same heart; the data cuts the pulmonary trunk short above its valve and closes the left atrial appendage
+  off with a plane, like the vein stumps.
 
 ## Heart frame for the ECG (`build_frame.py`)
 

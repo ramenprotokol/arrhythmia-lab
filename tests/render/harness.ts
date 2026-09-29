@@ -3,7 +3,7 @@
 // renderLab.draw(), so every frame is one they asked for. Any GPU error the page does not catch is recorded in
 // window.renderGpuErrors, and the tests fail if there is one.
 import { loadFrame, type HeartFrame } from "../../src/data/heartFrame";
-import { loadHeart, loadSurface, type HeartGrid, type HeartSurface } from "../../src/data/loadHeart";
+import { loadAnatomy, loadHeart, loadSurface, type HeartAnatomy, type HeartGrid, type HeartSurface } from "../../src/data/loadHeart";
 import { Renderer } from "../../src/render/Renderer";
 import type { QualityName } from "../../src/render/quality";
 import { Simulation } from "../../src/sim/Simulation";
@@ -13,6 +13,8 @@ export interface Lab {
   canvas: HTMLCanvasElement;
   grid: HeartGrid;
   surface: HeartSurface;
+  /** The rest of the heart and the anatomy of the ventricles' surface. */
+  anatomy: HeartAnatomy;
   sim: Simulation;
   renderer: Renderer;
   /** The heart's anatomical frame, as public/data/heart-frame.json gives it. */
@@ -51,10 +53,12 @@ window.renderReady = (async () => {
   void device.lost.then((info) => window.renderGpuErrors.push("device lost: " + info.message));
 
   const [grid, surface, frame] = await Promise.all([loadHeart("/data/heart.bin"), loadSurface("/data/heart-surface.bin"), loadFrame("/data/heart-frame.json")]);
+  const anatomy = await loadAnatomy("/data/heart-anatomy.bin", surface.positions.length / 3);
   const sim = await Simulation.create(device, grid, { dt: 0.05 });
   const canvas = document.getElementById("view") as HTMLCanvasElement;
   const quality = (new URLSearchParams(location.search).get("quality") ?? "high") as QualityName;
-  const renderer = await Renderer.create(canvas, device, surface, grid, sim, { quality, frame });
+  // the idle sway is off: every test frame is one the test asked for, from the camera the test set
+  const renderer = await Renderer.create(canvas, device, surface, grid, sim, { quality, frame, anatomy, drift: false });
   const fit = () => renderer.resize(window.innerWidth, window.innerHeight, window.devicePixelRatio);
   fit();
   window.addEventListener("resize", fit);
@@ -77,7 +81,7 @@ window.renderReady = (async () => {
     const c = document.createElement("canvas");
     c.width = 320;
     c.height = 200;
-    return Renderer.create(c, device, surface, grid, sim, { quality: q, frame });
+    return Renderer.create(c, device, surface, grid, sim, { quality: q, frame, anatomy, drift: false });
   };
 
   const measure: Lab["measure"] = async (n, simMs) => {
@@ -99,5 +103,5 @@ window.renderReady = (async () => {
     return { mean, min: times[0], max: times[times.length - 1], p95: times[Math.floor(times.length * 0.95)], gpuMs: null };
   };
 
-  window.renderLab = { device, canvas, grid, surface, sim, renderer, frame, apex: frame.apexVoxel, fit, draw, play, spawn, Renderer, measure };
+  window.renderLab = { device, canvas, grid, surface, anatomy, sim, renderer, frame, apex: frame.apexVoxel, fit, draw, play, spawn, Renderer, measure };
 })();

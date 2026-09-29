@@ -462,6 +462,44 @@ test("single mode shows lead II large, and switching modes keeps the data", asyn
   expect(r.back.trace[0]).toBeGreaterThan(300);
 });
 
+test("setStripLead puts another lead on the big trace and the rhythm strip, names it, and keeps every lead's data", async ({ page }) => {
+  await open(page);
+  const r = await page.evaluate(async () => {
+    const { ui } = window;
+    const m = await ui.mountMonitor({ width: 900, height: 320, dpr: 1, mode: "single" });
+    const canvas = ui.current!.canvas;
+    ui.feed(m, 0, 6000);
+    const before = ui.grab(canvas);
+    const label = () => canvas.getAttribute("aria-label") ?? "";
+    const was = { lead: m.stripLeadIndex, label: label() };
+    m.setStripLead(7);
+    m.render();
+    const after = ui.grab(canvas);
+    const box = m.getLayout()!.boxes[0];
+    const single = { lead: m.stripLeadIndex, box: box.label, label: label(), changed: ui.diff(before, after).count, trace: ui.traceCount(after, [box.x, box.y, box.w, box.h]) };
+    m.setMode("twelve");
+    m.render();
+    const strip = m.getLayout()!.boxes.find((b) => b.kind === "strip")!;
+    const twelve = { strip: strip.lead, trace: ui.traceCount(ui.grab(canvas), [strip.x, strip.y, strip.w, strip.h]) };
+    let refused = "";
+    try {
+      m.setStripLead(12);
+    } catch (e) {
+      refused = (e as Error).message;
+    }
+    return { was, single, twelve, refused };
+  });
+  expect(r.was.lead).toBe(1);
+  expect(r.was.label).toMatch(/lead II/i);
+  expect(r.single).toMatchObject({ lead: 7, box: "V2" });
+  expect(r.single.label).toMatch(/lead V2/);
+  expect(r.single.changed).toBeGreaterThan(100); // redrawn with the other lead's samples, which were kept
+  expect(r.single.trace).toBeGreaterThan(300);
+  expect(r.twelve.strip).toBe(7);
+  expect(r.twelve.trace).toBeGreaterThan(100);
+  expect(r.refused).toMatch(/lead must be/);
+});
+
 test("setWindowMs changes the sweep length and the stored window, without losing samples", async ({ page }) => {
   await open(page);
   const r = await page.evaluate(async () => {
@@ -626,3 +664,75 @@ test.describe("screenshots for a human to look at", () => {
     });
   });
 });
+
+test("with automatic gain, lowers only the chest leads' gain when their waves would be cut flat, and raises it again once they fit", async ({ page }) => {
+  await open(page);
+  const r = await page.evaluate(async () => {
+    const { ui } = window;
+    const m = await ui.mountMonitor({ width: 1200, height: 700 });
+    m.setAutoGain(true);
+    const leads = new Float32Array(12);
+    // a beat every 800 ms: lead II reaches 0.5 mV and V5 4.5 mV, like the model's chest leads in a steady rhythm
+    const beat = (t: number, chest: number) => {
+      leads.fill(0);
+      const k = t % 800 < 40 ? 1 : 0;
+      leads[1] = 0.5 * k;
+      leads[10] = chest * k;
+      return leads;
+    };
+    for (let t = 0; t < 3000; t += 4) {
+      m.push(t, beat(t, 4.5));
+      m.render();
+    }
+    const tall = m.groupGains;
+    const layout = m.getLayout()!;
+    const V5 = layout.boxes.find((b) => b.id === "V5")!;
+    const II = layout.boxes.find((b) => b.id === "II")!;
+    const canvas = ui.current!.canvas;
+    const said = document.getElementById(canvas.getAttribute("aria-describedby") ?? "")?.textContent ?? "";
+    // then 1 mV beats, for longer than the window and the wait before stepping up
+    for (let t = 3000; t < 3000 + 6000 + 4000; t += 4) {
+      m.push(t, beat(t, 1));
+      m.render();
+    }
+    return { tall, V5Fits: 4.5 * V5.pxPerMv <= V5.baseline - V5.y, V5Gain: V5.gainMmPerMv, IIGain: II.gainMmPerMv, said, after: m.groupGains };
+  });
+  expect(r.tall).toEqual({ limb: 5, chest: 2.5 });
+  expect(r.V5Gain).toBe(2.5);
+  expect(r.IIGain).toBe(5);
+  expect(r.V5Fits).toBe(true);
+  expect(r.said).toContain("5 millimetres per millivolt for the limb leads and 2.5 millimetres per millivolt for the chest leads");
+  expect(r.after).toEqual({ limb: 5, chest: 5 });
+});
+
+test("with automatic gain, a short strip showing a chest lead in a racing rhythm drops to 5 mm/mV instead of cutting the wave", async ({ page }) => {
+  await open(page);
+  const r = await page.evaluate(async () => {
+    const { ui } = window;
+    const m = await ui.mountMonitor({ width: 366, height: 96 });
+    m.setMode("single");
+    m.setStripLead(8); // V3
+    m.setAutoGain(true);
+    const leads = new Float32Array(12);
+    for (let t = 0; t < 2000; t += 4) {
+      leads.fill(0);
+      leads[8] = 1.4 * Math.sin((2 * Math.PI * t) / 250); // swings 1.4 mV each way, four times a second
+      m.push(t, leads);
+      m.render();
+    }
+    const box = m.getLayout()!.boxes[0];
+    const canvas = ui.current!.canvas;
+    return {
+      gains: m.groupGains,
+      gain: box.gainMmPerMv,
+      fits: 1.4 * box.pxPerMv <= Math.min(box.baseline - box.y, box.y + box.h - box.baseline),
+      said: document.getElementById(canvas.getAttribute("aria-describedby") ?? "")?.textContent ?? "",
+    };
+  });
+  expect(r.gain).toBe(5);
+  expect(r.gains.chest).toBe(5);
+  expect(r.fits).toBe(true);
+  expect(r.said).toContain("lead V3");
+  expect(r.said).toContain("5 millimetres per millivolt");
+});
+

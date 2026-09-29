@@ -7,7 +7,7 @@ import type { Box, MonitorLayout } from "./monitorLayout";
 export const NOTICE = "Simulated. Not a medical device.";
 
 export function paintPaper(ctx: CanvasRenderingContext2D, layout: MonitorLayout): void {
-  const { width, height, dpr, pxPerMm, pxPerMv, boxes, footer, gutter } = layout;
+  const { width, height, dpr, pxPerMm, boxes, footer, gutter } = layout;
   ctx.fillStyle = INK.paper;
   ctx.fillRect(0, 0, width, height);
 
@@ -19,7 +19,7 @@ export function paintPaper(ctx: CanvasRenderingContext2D, layout: MonitorLayout)
 
   paintRules(ctx, layout);
   for (const b of boxes) paintLabel(ctx, b, dpr);
-  for (const b of boxes) if (b.calibration) paintCalibration(ctx, b, gutter, pxPerMm, pxPerMv, dpr);
+  for (const b of boxes) if (b.calibration) paintCalibration(ctx, b, gutter, pxPerMm, b.pxPerMv, dpr);
   paintFooter(ctx, footer, layout);
 }
 
@@ -86,13 +86,24 @@ function paintCalibration(ctx: CanvasRenderingContext2D, b: Box, gutter: { x: nu
   ctx.fillText("1 mV", gutter.x + 2 * dpr, y + 12 * dpr);
 }
 
+/**
+ * The gain and the window along the bottom, with the notice on the right. When the limb and chest leads run at
+ * different gains both are named; on a narrow canvas the words shorten rather than run into the notice.
+ */
 function paintFooter(ctx: CanvasRenderingContext2D, footer: { x: number; y: number; w: number; h: number }, layout: MonitorLayout): void {
-  const { dpr, windowMs } = layout;
+  const { dpr, windowMs, groupGains } = layout;
   const y = footer.y + footer.h / 2 + 3.5 * dpr;
   ctx.font = `500 ${10.5 * dpr}px ${FONT}`;
   ctx.fillStyle = INK.note;
+  const split = layout.mode === "twelve" && groupGains.limb !== groupGains.chest;
+  const span = `${windowMs / 1000} s window`;
+  const choices = split
+    ? [`Limb leads ${groupGains.limb} mm/mV  ·  chest leads ${groupGains.chest} mm/mV  ·  ${span}`, `Limb ${groupGains.limb}, chest ${groupGains.chest} mm/mV`, `${groupGains.limb}/${groupGains.chest} mm/mV`]
+    : [`${layout.gainMmPerMv} mm/mV  ·  ${span}`, `${layout.gainMmPerMv} mm/mV`];
+  const room = footer.w - ctx.measureText(NOTICE).width - 12 * dpr;
+  const text = choices.find((c) => ctx.measureText(c).width <= room) ?? choices[choices.length - 1];
   ctx.textAlign = "left";
-  ctx.fillText(`${layout.gainMmPerMv} mm/mV  ·  ${windowMs / 1000} s window`, footer.x, y);
+  ctx.fillText(text, footer.x, y);
   ctx.textAlign = "right";
   ctx.fillText(NOTICE, footer.x + footer.w, y);
   ctx.textAlign = "left";

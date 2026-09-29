@@ -33,7 +33,7 @@ const finitePositive = (n: number): boolean => Number.isFinite(n) && n > 0;
 export function createComposite(
   size: { width: number; height: number },
   layers: readonly Layer[],
-  opts: { paused?: boolean } = {},
+  opts: { paused?: boolean; overlay?: (ctx: CanvasRenderingContext2D, width: number, height: number) => void } = {},
 ): { canvas: HTMLCanvasElement; draw(): void; start(): void; stop(): void } {
   if (!finitePositive(size.width) || !finitePositive(size.height)) throw new RangeError(`composite size must be more than 0, got ${size.width} x ${size.height}`);
   for (const { rect } of layers) {
@@ -80,6 +80,7 @@ export function createComposite(
         ctx.drawImage(source, sx, sy, sw, sh, dx, dy, dw, dh);
       }
     }
+    opts.overlay?.(ctx, canvas.width, canvas.height); // captions and the like, on top of every layer
   };
 
   let handle = 0;
@@ -104,11 +105,12 @@ export function createComposite(
 }
 
 const MIME_TYPES = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"] as const;
+const MIME_TYPES_WITH_AUDIO = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus"] as const;
 
-/** The best WebM type this browser can record: vp9, then vp8, then plain webm. Throws if there is none. */
-export function pickMimeType(): string {
+/** The best WebM type this browser can record: vp9, then vp8, then plain webm; with sound, one that carries Opus audio if there is one. Throws if there is none. */
+export function pickMimeType(withAudio = false): string {
   if (typeof MediaRecorder === "undefined") throw new Error("This browser cannot record video: MediaRecorder is not available.");
-  for (const type of MIME_TYPES) if (MediaRecorder.isTypeSupported(type)) return type;
+  for (const type of withAudio ? [...MIME_TYPES_WITH_AUDIO, ...MIME_TYPES] : MIME_TYPES) if (MediaRecorder.isTypeSupported(type)) return type;
   throw new Error("This browser cannot record video: it cannot make WebM files.");
 }
 
@@ -121,6 +123,7 @@ export class ClipRecorder {
   private readonly fps: number;
   private readonly maxSeconds: number;
   private readonly frameSource: FrameSource | undefined;
+  private readonly audio: (() => MediaStream | null) | undefined;
   private take: Take | null = null;
   /** A clip that the time limit finished and nobody was waiting for. stop() hands it over once. */
   private pending: Promise<Blob> | null = null;
@@ -128,11 +131,12 @@ export class ClipRecorder {
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
-    opts: { fps?: number; maxSeconds?: number; frameSource?: FrameSource } = {},
+    opts: { fps?: number; maxSeconds?: number; frameSource?: FrameSource; audio?: () => MediaStream | null } = {},
   ) {
     this.fps = opts.fps ?? 30;
     this.maxSeconds = opts.maxSeconds ?? 30;
     this.frameSource = opts.frameSource;
+    this.audio = opts.audio;
     if (!finitePositive(this.fps)) throw new RangeError(`fps must be more than 0, got ${this.fps}`);
     if (!finitePositive(this.maxSeconds)) throw new RangeError(`maxSeconds must be more than 0, got ${this.maxSeconds}`);
   }
@@ -168,7 +172,11 @@ export class ClipRecorder {
     let recorder: MediaRecorder;
     try {
       stream = this.canvas.captureStream(this.fps);
-      recorder = new MediaRecorder(stream, { mimeType: pickMimeType(), videoBitsPerSecond: 4_000_000 });
+      // With a sound source, record it too. Its tracks are cloned, because stopping a recording stops its tracks and the
+      // source's own tracks must survive for the next clip.
+      const sound = this.audio?.()?.getAudioTracks().map((t) => t.clone()) ?? [];
+      for (const track of sound) stream.addTrack(track);
+      recorder = new MediaRecorder(stream, { mimeType: pickMimeType(sound.length > 0), videoBitsPerSecond: 4_000_000 });
     } catch (e) {
       stream?.getTracks().forEach((t) => t.stop());
       this.frameSource?.stop();
@@ -262,22 +270,35 @@ function download(clip: Blob, filename: string): void {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+export type RecordButtonOptions = {
+  /** Where the words go. Without it the button's whole text is replaced, so an icon button passes its label element. */
+  label?: HTMLElement;
+  /** Told whenever recording starts or stops, and when a clip is saved. */
+  onChange?(recording: boolean, saved: boolean): void;
+};
+
 /**
  * Make `button` start and stop `recorder`, and save the clip as a download when it stops (or when the time limit
- * stops it). The button says what it will do and reports its state with aria-pressed. Where the browser cannot
- * record, the button is disabled and its title says why.
+ * stops it). The button says what it will do and reports its state with aria-pressed and a "recording" class. Where
+ * the browser cannot record, the button is disabled and its title says why.
  */
-export function attachRecordButton(button: HTMLButtonElement, recorder: ClipRecorder, filename: string = DEFAULT_FILENAME): void {
+export function attachRecordButton(button: HTMLButtonElement, recorder: ClipRecorder, filename: string = DEFAULT_FILENAME, opts: RecordButtonOptions = {}): void {
   const name = filename.toLowerCase().endsWith(".webm") ? filename : `${filename}.webm`;
-  const show = (recording: boolean): void => {
-    button.textContent = recording ? STOP_LABEL : RECORD_LABEL;
+  const say = (text: string): void => {
+    if (opts.label) opts.label.textContent = text;
+    else button.textContent = text;
+  };
+  const show = (recording: boolean, saved = false): void => {
+    say(recording ? STOP_LABEL : RECORD_LABEL);
     button.setAttribute("aria-pressed", String(recording));
+    button.classList.toggle("recording", recording);
     button.disabled = false;
+    opts.onChange?.(recording, saved);
   };
 
   const reason = ClipRecorder.unsupportedReason();
   if (reason) {
-    button.textContent = "Recording not supported";
+    say("Recording not supported");
     button.title = reason;
     button.setAttribute("aria-pressed", "false");
     button.disabled = true;
@@ -287,7 +308,7 @@ export function attachRecordButton(button: HTMLButtonElement, recorder: ClipReco
   show(false);
   recorder.onAutoStop((clip) => {
     download(clip, name);
-    show(false);
+    show(false, true);
   });
   button.addEventListener("click", async () => {
     if (button.disabled) return;
@@ -300,10 +321,12 @@ export function attachRecordButton(button: HTMLButtonElement, recorder: ClipReco
       }
       button.disabled = true; // while the last chunk is written
       download(await recorder.stop(), name);
+      show(false, true);
     } catch (e) {
       button.title = e instanceof Error ? e.message : "Recording failed.";
     } finally {
-      if (!recorder.recording) show(false);
+      if (!recorder.recording && button.getAttribute("aria-pressed") !== "false") show(false);
+      else if (!recorder.recording) button.disabled = false;
     }
   });
 }

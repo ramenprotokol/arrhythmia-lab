@@ -23,6 +23,12 @@ const MAX_REACTION_DT = 0.1;
 // The 3D heart on the GPU. The grid is stored dense, padded by one empty voxel on every side, and only
 // the muscle voxels are visited. u lives in two ping-pong buffers; the gating variables (v, w, s) are
 // updated in place because only their own voxel ever reads them.
+/**
+ * The sweep time of a voxel the sweep never reaches. A large finite number, not Infinity: the shader language only loosely
+ * defines comparisons with infinity, and some graphics cards treat it differently.
+ */
+export const SWEEP_NEVER = 1e30;
+
 export class Simulation {
   /** Padded dimensions. Voxel (x, y, z) of the original grid is at padded (x+1, y+1, z+1). */
   readonly layout: { nx: number; ny: number; nz: number; sx: number; sy: number; sz: number; voxelMm: number };
@@ -44,6 +50,7 @@ export class Simulation {
   private readonly applyPipeline: GPUComputePipeline;
   private readonly stepBinds: [GPUBindGroup, GPUBindGroup];
   private readonly applyBinds: [GPUBindGroup, GPUBindGroup];
+  private readonly bufSweep: GPUBuffer;
   private readonly countPipeline: GPUComputePipeline;
   private readonly countBinds: [GPUBindGroup, GPUBindGroup];
   private readonly bufCounter: GPUBuffer;
@@ -109,6 +116,8 @@ export class Simulation {
     };
     const bufCells = make(cells, storage);
     const bufActive = make(active, storage);
+    // Until a conduction sweep is set, no voxel ever reaches its time.
+    this.bufSweep = make(new Float32Array(this.count).fill(SWEEP_NEVER), storage);
     this.bufCellsRef = bufCells;
     this.bufMuscleRef = bufActive;
     const uUsage = storage | GPUBufferUsage.COPY_SRC;
@@ -154,10 +163,12 @@ export class Simulation {
       device.createBindGroup({
         layout: this.applyPipeline.getBindGroupLayout(0),
         entries: [
+          { binding: 2, resource: { buffer: bufCells } },
           { binding: 3, resource: { buffer: bufActive } },
           { binding: 6, resource: { buffer: this.bufGates } },
           { binding: 7, resource: { buffer: this.bufApply } },
           { binding: 8, resource: { buffer: this.bufU[i] } },
+          { binding: 10, resource: { buffer: this.bufSweep } },
         ],
       });
     this.applyBinds = [applyBind(0), applyBind(1)];
@@ -231,11 +242,11 @@ export class Simulation {
     this.device.queue.submit([enc.finish()]);
   }
 
-  private writeApply(mode: 0 | 1, c: [number, number, number], radiusVoxels: number, add: number): void {
+  private writeApply(mode: 0 | 1 | 2 | 3, c: [number, number, number], radiusVoxels: number, add: number, p0 = 0, p1 = 0): void {
     const { sx, sy } = this.layout;
     const buf = new ArrayBuffer(48);
     new Uint32Array(buf, 0, 4).set([this.count, mode, sx, sy]);
-    new Float32Array(buf, 16, 8).set([c[0] + 1, c[1] + 1, c[2] + 1, radiusVoxels * radiusVoxels, add, 0, 0, 0]);
+    new Float32Array(buf, 16, 8).set([c[0] + 1, c[1] + 1, c[2] + 1, radiusVoxels * radiusVoxels, add, p0, p1, 0]);
     this.device.queue.writeBuffer(this.bufApply, 0, buf);
   }
 
@@ -245,9 +256,40 @@ export class Simulation {
    * Voxels that are not muscle are never touched.
    */
   stimulate(voxel: [number, number, number], radiusMm: number, opts: { amp?: number; ms?: number } = {}): void {
+    this.pulse(0, voxel, radiusMm, opts);
+  }
+
+  /**
+   * Like stimulate, but only the inner wall (the endocardium, tissue label 1) inside the ball is stimulated. A ball as
+   * wide as a ventricle switches its whole inner surface on together, and the wave then crosses the wall from the inside
+   * out, as it does when the heart's conduction fibres deliver the beat.
+   */
+  stimulateInnerWall(voxel: [number, number, number], radiusMm: number, opts: { amp?: number; ms?: number } = {}): void {
+    this.pulse(2, voxel, radiusMm, opts);
+  }
+
+  /**
+   * Set when a conduction sweep switches each muscle voxel on: `times` holds one value per muscle voxel, in ms after the
+   * sweep begins, in the order the grid's muscle voxels are listed (z, then y, then x, skipping empty voxels), and
+   * SWEEP_NEVER for a voxel the sweep never reaches. See src/lab/conduction.ts.
+   */
+  setSweepTimes(times: Float32Array): void {
+    if (times.length !== this.count) throw new RangeError(`expected ${this.count} sweep times, got ${times.length}`);
+    this.device.queue.writeBuffer(this.bufSweep, 0, times as Float32Array<ArrayBuffer>);
+  }
+
+  /**
+   * One slot of a conduction sweep: give the stimulus current to every voxel whose sweep time is in [fromMs, toMs), and
+   * advance the simulation by `ms` (the length of the slot). Call it slot after slot to run the sweep.
+   */
+  stimulateSweep(fromMs: number, toMs: number, opts: { amp?: number; ms?: number } = {}): void {
+    this.pulse(3, [0, 0, 0], 0, opts, fromMs, toMs);
+  }
+
+  private pulse(mode: 0 | 2 | 3, voxel: [number, number, number], radiusMm: number, opts: { amp?: number; ms?: number }, p0 = 0, p1 = 0): void {
     const amp = opts.amp ?? STIM_AMP;
     const ms = opts.ms ?? STIM_MS;
-    this.writeApply(0, voxel, radiusMm / this.layout.voxelMm, amp * this.dt);
+    this.writeApply(mode, voxel, radiusMm / this.layout.voxelMm, amp * this.dt, p0, p1);
     const count = Math.ceil(ms / this.dt);
     const enc = this.device.createCommandEncoder();
     const pass = enc.beginComputePass();

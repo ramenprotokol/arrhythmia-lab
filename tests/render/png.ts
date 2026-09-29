@@ -76,18 +76,35 @@ export function meanLuminance(img: Picture): number {
 }
 
 /**
- * True for a pixel of saturated, bright cyan: the electric glow of excited tissue. Resting tissue, its
- * white highlights, the pale reflections and the dark blue room all fall short of it.
+ * True where a pixel is lit by the electrical wave, judged against the same pixel of a picture of the heart at rest
+ * from the same camera: much bluer than it was, not merely brighter (a white highlight brightens every channel alike,
+ * and the muscle stays muscle-coloured away from the front). i is the byte offset of the pixel.
  */
-export function isGlow(r: number, g: number, b: number): boolean {
-  return g > 150 && b - r > 130;
+export function isWaveLit(img: Picture, rest: Picture, i: number): boolean {
+  const dr = img.data[i] - rest.data[i];
+  const db = img.data[i + 2] - rest.data[i + 2];
+  return db > 60 && db - dr > 50 && img.data[i + 2] > img.data[i] + 30;
 }
 
-/** Fraction of pixels that are glowing cyan. */
-export function glowFraction(img: Picture): number {
+/** Share of the picture lit by the wave, against the picture at rest. */
+export function waveFraction(img: Picture, rest: Picture): number {
+  if (img.width !== rest.width || img.height !== rest.height) throw new Error("pictures differ in size");
   let n = 0;
-  for (let i = 0; i < img.data.length; i += 4) if (isGlow(img.data[i], img.data[i + 1], img.data[i + 2])) n++;
+  for (let i = 0; i < img.data.length; i += 4) if (isWaveLit(img, rest, i)) n++;
   return n / (img.data.length / 4);
+}
+
+/** The middle of the pixels lit by the wave, or null if none are. */
+export function waveCentre(img: Picture, rest: Picture): [number, number] | null {
+  let sx = 0, sy = 0, n = 0;
+  for (let y = 0; y < img.height; y++)
+    for (let x = 0; x < img.width; x++)
+      if (isWaveLit(img, rest, (y * img.width + x) * 4)) {
+        sx += x;
+        sy += y;
+        n++;
+      }
+  return n ? [sx / n, sy / n] : null;
 }
 
 /** Mean absolute difference per channel between two pictures of the same size, 0 to 255. */

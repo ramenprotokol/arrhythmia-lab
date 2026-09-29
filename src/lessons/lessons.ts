@@ -1,22 +1,36 @@
-import type { LabApi, Lesson } from "./runner";
+import type { LabApi, Lesson, LessonStep } from "./runner";
 import * as R from "./recipes";
 
 /**
  * The timings that only the lessons use, in simulated milliseconds, and the shares of the muscle they read as
  * "excited". Everything tuned on the heart itself (the apex, the tissue settings, the extra-beat timing) is in
- * recipes.ts and is used from there.
+ * recipes.ts and is used from there. The page runs in real time by default, so these are also seconds on screen.
  */
 export const LESSON_SETTINGS = {
-  /** How long a "watch this" caption stays up. A normal beat is over in under 500 ms. */
-  captionMs: 2000,
   /** The gap between steady beats: the pacemaker's period (a test checks it against the lab's). */
   steadyGapMs: 800,
-  /** Tachycardia lesson: how long the viewer watches the wave circling before the lesson sums it up. */
+  /**
+   * One-beat lesson: after the steady beat is switched on (its first beat comes 400 ms later), long enough for the
+   * second and third beats and their spikes to be drawn, since a nudge just before can block the first.
+   */
+  steadyShowMs: 2400,
+  /** Extra-beat lesson: the steady rhythm is watched this long (two beats) before the early beat is fired. */
+  steadyWatchMs: 1700,
+  /** Extra-beat lesson: after the early beat, long enough for the pause and the next steady beat to be drawn. */
+  pauseWatchMs: 1500,
+  /** Racing lesson: how long the viewer watches the wave circling before the lesson explains it. */
   keepsGoingMs: 5000,
   /** Fibrillation lesson: how long the viewer watches the many small waves. */
-  seeingMs: 4000,
-  /** Shock lesson: how long the regular rhythm is shown after it resumes, about four beats. */
-  rhythmMs: 3500,
+  seeingMs: 5000,
+  /** A step waiting for the lab to start a rhythm offers its hint after this long. */
+  startingHintMs: 10_000,
+  /** A step watching a rhythm offers its hint this soon if the rhythm has stopped. */
+  stoppedHintMs: 1500,
+  /**
+   * After a tap, "quiet" is not taken to mean the wave is over until this long has passed: the excited share is read a
+   * frame late, and a beat from one spot takes a few hundred ms to creep across the heart.
+   */
+  waveMs: 600,
   /** "The wave is over" means less than this share of the muscle is excited. */
   quietBelow: 0.01,
   /** A heart is "active" if more than this share of the muscle is excited. */
@@ -25,6 +39,18 @@ export const LESSON_SETTINGS = {
   goingAbove: 0.05,
   /** A heart that is active this long after its last beat, with nothing left to drive it, is in a rhythm of its own. */
   sustainedAfterMs: 900,
+  /**
+   * A shock makes every cell that can fire do so at once, so for a moment most of the heart is excited. How much
+   * depends on the moment it lands, because muscle still recovering from the last wave cannot fire: measured 0.58 to
+   * 1.0 in the racing rhythm and in fibrillation. Those rhythms on their own stay lower (at most 0.46 racing, about 0.2
+   * fibrillating), and while they run the steady beat is off, so nothing else does it. A shock that is missed here is
+   * still caught by nothingToShockMs.
+   */
+  shockedAbove: 0.52,
+  /** A Shock step lets a heart that has been quiet this long go on without a shock: there is nothing left to shock. */
+  nothingToShockMs: 1500,
+  /** The shock lesson shows the fibrillation it set up for this long before asking for the Shock. */
+  watchBeforeShockMs: 2000,
 };
 
 const S = LESSON_SETTINGS;
@@ -33,310 +59,327 @@ const settled = (api: LabApi) => api.activeFraction() < S.quietBelow;
 const going = (api: LabApi) => api.activeFraction() > S.goingAbove;
 const always = () => true;
 const succeeded = (api: LabApi) => api.induceStatus() === "success";
-const setTissue = (recipe: R.Tissue) => (api: LabApi) => api.setTissue({ ...recipe });
-const paceApex = (api: LabApi) => api.pace([...R.APEX]);
 const sinceLastBeat = (api: LabApi) => api.simTimeMs() - api.lastBeatMs();
 
 /** True when the heart is in a rhythm of its own: active a long time after anything drove it. */
 const rhythmOfItsOwn = (api: LabApi) => sinceLastBeat(api) > S.sustainedAfterMs && api.activeFraction() > S.activeAbove;
 
 /**
- * Begin from a heart at rest if the viewer left one in a rhythm of its own (a wave still circling from an earlier
- * lesson). A healthy heart that is simply beating is never touched: a beat's wave is over well before the next one.
+ * Begin from a heart at rest if the viewer left one in a rhythm of its own (a wave still circling from free play). A
+ * healthy heart that is simply beating is never touched: a beat's wave is over well before the next one.
  */
 const calm = (api: LabApi) => {
   if (rhythmOfItsOwn(api)) api.shock();
 };
 
-/** Every lesson starts by pausing the pacemaker: the lab boots with it running, and the lessons give the beats. */
-const pausePacemaker = (api: LabApi) => api.setPacemaker(false);
+/**
+ * The step that waits for the viewer's Shock. It moves on once the whole heart has fired at once (the shock) and then
+ * gone quiet. A heart that has been quiet for a while with no shock (the lab could not start a rhythm, or the viewer
+ * ended it another way) is not held either: Shock would be refused on a still heart, and the viewer would be stuck.
+ */
+function waitForShock(text: string, hint: string): LessonStep {
+  let peak = 0;
+  let quietSince: number | null = null;
+  return {
+    title: "Fix it",
+    text,
+    action: () => {
+      peak = 0;
+      quietSince = null;
+    },
+    waitFor: (api) => {
+      peak = Math.max(peak, api.activeFraction());
+      if (!settled(api)) quietSince = null;
+      else quietSince ??= api.simTimeMs();
+      const shocked = peak > S.shockedAbove && quietSince !== null;
+      const nothingLeft = quietSince !== null && api.simTimeMs() - quietSince >= S.nothingToShockMs;
+      return shocked || nothingLeft;
+    },
+    canSkip: false,
+    hint,
+  };
+}
 
-const HINT_TIMER = "This step carries on by itself. Press Skip to move on.";
-const HINT_TIMINGS =
-  "The lab is trying a few different timings for the early beat until one takes on this computer, because the exact moment matters. If it does not start, press Skip.";
-const HINT_BURSTS = "The lab is trying a few different bursts until one takes. If nothing starts, press Skip.";
-const HINT_STILL_GOING = "If the glow fades away, the wave did not keep going. Press Skip to carry on.";
-const PACEMAKER_NOTE = "We have paused the pacemaker, the part that fires a steady beat";
+const HINT_STARTING = "Finding the right moment can take a few tries. If nothing starts, press Skip.";
 
-const normalBeat: Lesson = {
+// ---- 1. One beat ----------------------------------------------------------------------------------------------------
+
+/** When the "Tap the heart" step began: a beat after this is the viewer's. */
+let tapFrom = -Infinity;
+
+const oneBeat: Lesson = {
   id: "normal-beat",
-  title: "Normal beat",
-  summary: "Watch one beat cross the model heart and draw its wave on the ECG.",
+  title: "One beat",
+  summary: "Start a beat yourself, then see how the ECG draws it.",
   steps: [
     {
-      title: "The model heart",
-      text:
-        "This is an idealised simulation of the two main pumping chambers of a heart (the ventricles). " +
-        "It is a teaching model, not a real patient. The glow is electricity moving through the muscle. " +
-        "The ECG panel draws that electricity as a line. We have paused the pacemaker, the part that normally fires a steady beat, so the heart is still. " +
-        "Press Next and we will fire one beat.",
+      title: "Tap the heart",
+      text: "We paused the steady beat. Tap anywhere on the heart to start one beat there. The glow is electricity.",
       action: (api) => {
         calm(api);
-        pausePacemaker(api);
-        setTissue(R.NORMAL_TISSUE)(api);
+        api.setTissue({ ...R.NORMAL_TISSUE });
+        api.setPacemaker(false);
+        tapFrom = api.simTimeMs();
       },
+      // the viewer tapped, and that beat's wave has crossed the heart and gone (the excited share is read a frame
+      // late, so "quiet" only counts once the wave has had time to start)
+      waitFor: (api) => api.lastBeatMs() > tapFrom && sinceLastBeat(api) > S.waveMs && settled(api),
+      hint: "Tap or click anywhere on the heart. Or press Skip, and the lab fires a beat for you.",
     },
     {
-      title: "One beat",
-      text: "A small electrical nudge at the tip of the heart. Watch the glow spread out from the tip.",
-      action: paceApex,
-      waitFor: settled,
-      minMs: S.captionMs,
-      hint: HINT_TIMER,
+      title: "The steady beat",
+      text: "Now the steady beat comes back. It spreads through fast wiring, so the whole muscle fires almost together.",
+      action: (api) => {
+        // a viewer who pressed Skip still gets a beat from one spot to compare with: the lab nudges the tip
+        if (api.lastBeatMs() <= tapFrom) api.pace([...R.APEX]);
+        api.setPacemaker(true);
+      },
+      // long enough for two steady beats to be drawn after the first, which a nudge just before may have blocked
+      waitFor: always,
+      minMs: S.steadyShowMs,
     },
     {
-      title: "What you just saw",
+      title: "Two kinds of beat",
       text:
-        "The wave crossed the whole muscle in a fraction of a second. On the ECG it drew a sharp swing " +
-        "(doctors call it the QRS complex). Then the muscle reset, and the ECG drew a smaller, rounder wave " +
-        "(the T wave). Tap the heart to send another beat and watch again.",
+        "The ECG is held. The first beat crept from one spot, cell to cell, so it drew a wide swing. " +
+        "The steady beats use the wiring, so each draws a narrow spike.",
+      holdEcg: true,
+    },
+    {
+      title: "The ECG",
+      text:
+        "On the ECG each steady beat draws a quick spike as the wave spreads (the QRS complex), " +
+        "then a rounder wave as the muscle resets (the T wave).",
+    },
+    {
+      title: "Where beats start",
+      text:
+        "In a real heart, each beat starts at the top, in a small patch of pacemaker cells, and reaches the lower chambers " +
+        "through fast wiring. Here it starts in that wiring.",
+    },
+    {
+      title: "What is missing",
+      text:
+        "Real ECGs also show a small bump before each beat, the P wave, made by the upper chambers. " +
+        "They are drawn here but not simulated, so it is missing.",
     },
     {
       title: "What you learned",
       text:
-        "A heartbeat is a wave of electricity that starts in one spot and spreads through the muscle. " +
-        "The ECG line is drawn by that wave: a sharp swing as it crosses, then a rounder wave as the muscle resets. " +
-        "The pacemaker is back on. All of this is an idealised simulation, not a real patient.",
-      action: (api) => api.setPacemaker(true),
+        "A heartbeat is a wave of electricity. Through the fast wiring it reaches the whole muscle almost at once and draws " +
+        "a narrow spike; from one spot it creeps and draws a wide one.",
     },
   ],
 };
 
-const extraBeat: Lesson = {
+// ---- 2. An early beat -----------------------------------------------------------------------------------------------
+
+/** When the extra-beat lesson switched the steady beat on: the early beat waits for a steady beat after this. */
+let steadyFrom = -Infinity;
+
+const earlyBeat: Lesson = {
   id: "extra-beat",
-  title: "An extra beat (PVC)",
-  summary: "See what an early extra beat does to the ECG.",
+  title: "An early beat (PVC)",
+  summary: "An early extra beat, the pause after it, and the skipped beat people feel.",
   steps: [
     {
-      title: "Early beats",
-      text:
-        "This is an idealised simulation, not a real patient. Sometimes a spot in the heart muscle fires early, " +
-        "before the next normal beat is due. Doctors call this a PVC, short for premature ventricular contraction. " +
-        "It just means an early extra beat that starts in the main pumping chambers. " +
-        `${PACEMAKER_NOTE}, and will give the beats ourselves.`,
+      title: "The steady rhythm",
+      text: "The steady beat is on: one beat every 0.8 seconds. Watch the ECG.",
       action: (api) => {
         calm(api);
-        pausePacemaker(api);
-        setTissue(R.NORMAL_TISSUE)(api);
+        api.setTissue({ ...R.NORMAL_TISSUE });
+        // Switching a running steady beat "on" again would restart its clock and draw one short gap on the ECG, which
+        // looks like an early beat: only switch it on if it is off.
+        if (sinceLastBeat(api) > S.steadyGapMs + 100) api.setPacemaker(true);
+        steadyFrom = api.simTimeMs();
       },
-    },
-    {
-      title: "Beat one",
-      text: "Beat one, a normal beat.",
-      action: paceApex,
-      // the next beat is due one steady gap after this one
-      waitFor: (api) => sinceLastBeat(api) >= S.steadyGapMs - 2,
-      hint: HINT_TIMER,
-    },
-    {
-      title: "Beat two",
-      text: "Beat two, a steady beat later.",
-      action: paceApex,
-      // the extra beat comes as soon as the muscle has finished resetting from this one
-      waitFor: (api) => sinceLastBeat(api) >= R.PVC_EXTRA_BEAT_MS - 2,
-      hint: HINT_TIMER,
+      // after a steady beat or two, at the moment the muscle has just finished resetting from the last one
+      waitFor: (api) => api.lastBeatMs() > steadyFrom && sinceLastBeat(api) >= R.PVC_EXTRA_BEAT_MS - 2,
+      minMs: S.steadyWatchMs,
+      hint: "If no beats appear, switch the steady beat back on, or press Skip.",
     },
     {
       title: "An early beat",
-      text: "Now an extra beat, well before the next one is due.",
+      text: "Now one spot on the wall fires early. Watch for the gap after it.",
       action: (api) => api.prematureBeat(),
-      waitFor: settled,
-      minMs: S.captionMs,
-      hint: HINT_TIMER,
+      // the next steady beat falls while the muscle is still resetting and does nothing; the one after it is drawn
+      waitFor: always,
+      minMs: S.pauseWatchMs,
     },
     {
-      title: "What you just saw",
+      title: "What you saw",
       text:
-        "The first two beats were 0.8 seconds apart. The extra beat came only about half a second after the second one, " +
-        "so on the ECG it sits closer to the beat before it. Its shape can also look different. " +
-        "That happens when an early beat starts from a different spot and crosses the muscle a different way.",
+        "The ECG is held. The early beat came before it was due. It started from one spot, so it drew a wide, different " +
+        "shape. Then came a pause.",
+      holdEcg: true,
+    },
+    {
+      title: "Why the pause",
+      text:
+        "The next steady beat arrived while the muscle was still resetting, so it did nothing. " +
+        "That early beat and pause is the skipped beat many people feel.",
+      holdEcg: true,
     },
     {
       title: "What you learned",
       text:
-        "A PVC is a beat that arrives before it is due. Because it can start from a different spot, its wave " +
-        "crosses the muscle by a different route, so its shape on the ECG can look different. " +
-        "The pacemaker is back on. This is an idealised simulation.",
-      action: (api) => api.setPacemaker(true),
+        "An early extra beat is called a PVC, a premature ventricular contraction. " +
+        "Occasional ones are common and often harmless, and the rhythm carries on by itself.",
     },
   ],
 };
 
-const tachycardia: Lesson = {
+// ---- 3. Racing rhythm -----------------------------------------------------------------------------------------------
+
+const racing: Lesson = {
   id: "tachycardia",
-  title: "Sustained tachycardia",
-  summary: "Make the waves shorter, then start one that keeps circling by itself.",
+  title: "Racing rhythm (VT)",
+  summary: "Break it: one wave chases its own tail. Then shock it back.",
   steps: [
     {
-      title: "A wave that chases itself",
-      text:
-        "This is an idealised simulation, not a real patient. Normally each wave dies out after it crosses the heart, " +
-        "because the muscle it has just passed needs a moment to recover. " +
-        "But if a wave is short enough, it can circle round and meet muscle that has already recovered. " +
-        "Then it can keep going, lap after lap. A fast rhythm like this is called tachycardia. " +
-        `${PACEMAKER_NOTE}.`,
-      action: (api) => {
-        calm(api);
-        pausePacemaker(api);
-      },
-    },
-    {
-      title: "Making the wave shorter",
-      text:
-        "We moved two sliders. Recovery time is now shorter, so muscle gets ready to fire again sooner. " +
-        "Conduction speed is now lower, so the wave travels more slowly. " +
-        "A wave that travels slowly and leaves muscle ready sooner is shorter, so it fits inside the heart more easily.",
-      action: setTissue(R.TACHYCARDIA_TISSUE),
-    },
-    {
-      title: "The timing matters",
-      text:
-        "An early beat at the wrong moment, in a heart with short waves, can start a wave that keeps circling. " +
-        "The exact moment matters, so the lab tries a few different timings for you until one works. " +
-        "Press Next to begin.",
-    },
-    {
-      title: "A beat, then an early one",
-      text: "One ordinary beat, then an early extra beat at just the wrong moment. Watch the wave.",
+      title: "Break it",
+      text: "The lab makes the tissue fragile, then fires one early beat at just the wrong moment.",
       action: (api) => api.induce("tachycardia"),
       waitFor: succeeded,
-      hint: HINT_TIMINGS,
+      hint: HINT_STARTING,
+      hintAfterMs: S.startingHintMs,
     },
     {
-      title: "A wave that keeps going",
-      text:
-        "The early beat came when part of the muscle was ready to fire and part was not, so the wave found a way round. " +
-        "On the ECG you now see a fast run of small waves.",
+      title: "Watch it race",
+      text: "One wave is chasing its own tail around the heart. Each lap is a beat, far too fast for the heart to fill and pump.",
       waitFor: going,
       minMs: S.keepsGoingMs,
-      hint: HINT_STILL_GOING,
+      hint: "If the glow has stopped, the wave did not keep going. Press Skip to carry on.",
+      hintAfterMs: S.stoppedHintMs,
     },
+    {
+      title: "Why it can circle",
+      text:
+        "A wave usually dies out: the muscle behind it needs time to recover. " +
+        "Fragile tissue carries the wave slower and recovers sooner, so the wave is short enough to fit in a loop.",
+    },
+    {
+      title: "The trigger",
+      text:
+        "It still needed a trigger: one early beat that found part of the muscle ready and part still recovering, " +
+        "so it could only go one way round.",
+    },
+    waitForShock(
+      "Doctors call this ventricular tachycardia (VT), a racing rhythm from the lower chambers. In a person it is an emergency. Press Shock to stop it.",
+      "Press the Shock button to stop the racing rhythm. This step waits for you.",
+    ),
     {
       title: "What you learned",
       text:
-        "A wave can keep circling when it is short enough to fit inside the heart and finds muscle that has recovered. " +
-        "A shorter recovery time and slower conduction both make the wave shorter. " +
-        "One badly timed early beat was enough to start it. Nobody is nudging the heart now, and the Shock button can end it. " +
-        "Real hearts are far more complicated than this idealised simulation.",
+        "A wave circles when fragile tissue makes waves short and one early beat sets it off. " +
+        "A shock stops it. Treating the cause keeps it from coming back.",
     },
   ],
 };
+
+// ---- 4. Fibrillation ------------------------------------------------------------------------------------------------
 
 const fibrillation: Lesson = {
   id: "fibrillation",
-  title: "Break into fibrillation",
-  summary: "Shorten the waves further, then watch a burst of fast beats break into many waves.",
+  title: "Chaos: fibrillation (VF)",
+  summary: "Break it badly: the wave shatters and pumping stops. Then shock it.",
   steps: [
     {
-      title: "When the wave breaks",
-      text:
-        "This is an idealised simulation, not a real patient. A single circling wave is orderly. " +
-        "If the waves get even shorter, a wave can start to split into pieces. " +
-        "Many small waves then wander over the heart in every direction. This is called fibrillation. " +
-        `${PACEMAKER_NOTE}.`,
-      action: (api) => {
-        calm(api);
-        pausePacemaker(api);
-      },
-    },
-    {
-      title: "Shorter still",
-      text:
-        "We lowered both sliders much further, so the waves are shorter than before. " +
-        "With a shorter wave there is room for several of them in the heart at once. " +
-        "Next the lab gives a burst of very fast beats from the tip of the heart, about ten a second. " +
-        "That is how fibrillation is started in the lab.",
-      action: setTissue(R.FIBRILLATION_TISSUE),
-    },
-    {
-      title: "A burst of fast beats",
-      text: "A burst of very fast beats from the tip. Watch the wave.",
+      title: "Break it badly",
+      text: "The lab makes the tissue very fragile, then fires a rapid burst of beats, about ten a second.",
       action: (api) => api.induce("fibrillation"),
       waitFor: succeeded,
-      hint: HINT_BURSTS,
+      hint: HINT_STARTING,
+      hintAfterMs: S.startingHintMs,
     },
     {
-      title: "What you are seeing",
+      title: "Watch the chaos",
       text:
-        "The orderly wave has split into many small waves. The ECG is now small, uneven wobbles with no neat repeating pattern. " +
-        "A real heart like this only quivers. The model heart shows only electricity, so it stays still.",
+        "The wave has shattered into many small waves that collide and wander. The ECG turns into uneven wiggles. " +
+        "The muscle only quivers, so no blood moves.",
       waitFor: going,
       minMs: S.seeingMs,
-      hint: HINT_STILL_GOING,
+      hint: "If the glow has stopped, the waves died out. Press Skip to carry on.",
+      hintAfterMs: S.stoppedHintMs,
     },
+    {
+      title: "No pulse",
+      text:
+        "Doctors call this ventricular fibrillation (VF). In a person it is cardiac arrest: collapse within seconds, " +
+        "and no pulse. With sound on, you hear nothing at all.",
+    },
+    waitForShock(
+      "Only a defibrillator's shock can stop this. Press Shock now.",
+      "Press the Shock button to stop the fibrillation. This step waits for you.",
+    ),
     {
       title: "What you learned",
       text:
-        "When waves become short enough, a burst of fast beats can break one wave into many. " +
-        "The electricity turns chaotic and the ECG loses its regular pattern. " +
-        "A real heart in this state only quivers. The last lesson shows how to stop it. " +
-        "This is an idealised simulation, not a real patient.",
+        "Very short waves can shatter into ventricular fibrillation, and the heart stops pumping. " +
+        "In real life: call emergency services, start CPR (chest compressions), and use an AED, a public defibrillator.",
     },
   ],
 };
 
-const shockIt: Lesson = {
+// ---- 5. Shock it back -----------------------------------------------------------------------------------------------
+
+/** When the fibrillation the shock lesson set up was first seen going, or null while it is not. */
+let fibrillatingSince: number | null = null;
+
+const shockItBack: Lesson = {
   id: "shock",
   title: "Shock it back",
-  summary: "Reset a fibrillating heart with the Shock button, then bring back the regular rhythm.",
+  summary: "What a shock does, and why an AED will not shock a steady heart.",
   steps: [
     {
-      title: "Resetting the heart",
-      text:
-        "This is an idealised simulation, not a real patient. Fibrillation is when many small waves wander over the heart at once, so it only quivers. " +
-        "To stop it, the whole heart has to be reset at the same moment. " +
-        "In this lab the Shock button does that: it is a very simplified picture of a defibrillator. " +
-        `${PACEMAKER_NOTE}. First the lab sets up a heart in fibrillation, which takes a few seconds.`,
-      action: (api) => {
-        pausePacemaker(api);
-        setTissue(R.NORMAL_TISSUE)(api);
-      },
-    },
-    {
       title: "Setting up",
-      text: "Getting the heart into fibrillation. The lab sets short waves, then gives a burst of fast beats.",
-      // A rhythm the viewer left going is kept. A normal beat's wave that is merely in flight is not a rhythm: that
-      // heart is set up like any other.
+      text: "The lab starts fibrillation again: chaotic waves, no pumping. This takes a few seconds.",
       action: (api) => {
-        if (!rhythmOfItsOwn(api)) api.induce("fibrillation");
+        fibrillatingSince = null;
+        api.induce("fibrillation");
       },
-      waitFor: (api) => api.induceStatus() !== "running" && going(api),
-      hint: HINT_BURSTS,
+      // The rhythm is shown for a moment before the viewer is asked to shock it; the page's reading of the rhythm,
+      // which decides whether Shock is allowed, also needs that moment to catch up with a rhythm that has just begun.
+      waitFor: (api) => {
+        if (api.induceStatus() === "running" || !going(api)) {
+          fibrillatingSince = null;
+          return false;
+        }
+        fibrillatingSince ??= api.simTimeMs();
+        return api.simTimeMs() - fibrillatingSince >= S.watchBeforeShockMs;
+      },
+      hint: HINT_STARTING,
+      hintAfterMs: S.startingHintMs,
     },
     {
+      ...waitForShock("Press Shock and watch the whole heart. A shock makes every cell fire at the same moment.", "Press the Shock button. This step waits for you."),
       title: "Shock",
-      text: "Now press the amber Shock button, or the S key. It resets every cell at once.",
-      // the viewer does it: the step moves on once everything has gone quiet
-      waitFor: settled,
-      hint: "Press the amber Shock button on the right. Skip only moves the lesson on; it does not shock the heart.",
     },
     {
       title: "What just happened",
-      text:
-        "Every cell was reset at the same moment, so all the small waves vanished together. " +
-        "With nothing left to spread, the glow is gone and the ECG line is flat. " +
-        "Next we switch the pacemaker back on, so the steady beat starts again.",
+      text: "Every cell fired together, so every cell had to recover together. The circling waves found no muscle ready to carry them, and died out.",
     },
     {
-      title: "Back to normal",
-      text: "Healthy settings, and the pacemaker on again. Watch the regular rhythm come back.",
-      // the normal rhythm resumes by itself: the lesson gives no beat of its own
-      action: (api) => {
-        setTissue(R.NORMAL_TISSUE)(api);
-        api.setPacemaker(true);
-      },
-      waitFor: always,
-      minMs: S.rhythmMs,
-      hint: HINT_TIMER,
+      title: "The rhythm returns",
+      text:
+        "After a pause the steady beat returns. In people, the heart's own pacemaker cells at the top often take over like this. " +
+        "If not, chest compressions (CPR) continue.",
+    },
+    {
+      title: "Try it on a steady heart",
+      text: "Now press Shock again, on this steady rhythm, and see what happens. Then press Next.",
+    },
+    {
+      title: "No shock advised",
+      text:
+        "A shock only helps racing or chaotic rhythms. A real AED, the public defibrillator, checks the rhythm first, " +
+        "and will not shock a heart that is pumping, or one that is still.",
     },
     {
       title: "What you learned",
-      text:
-        "A shock resets every cell at once, which ends the chaos. In this lab that is what Shock does: " +
-        "it puts all the muscle back to rest. After that, the regular rhythm can start again. " +
-        "Remember, this is an idealised simulation, not a real patient.",
+      text: "A shock makes every cell fire at once, which ends circling waves. It cannot start a still heart, and the cause still needs treating afterwards.",
     },
   ],
 };
 
-export const LESSONS: Lesson[] = [normalBeat, extraBeat, tachycardia, fibrillation, shockIt];
+export const LESSONS: Lesson[] = [oneBeat, earlyBeat, racing, fibrillation, shockItBack];

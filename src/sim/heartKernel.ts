@@ -151,9 +151,15 @@ struct Apply {
 };
 @group(0) @binding(7) var<uniform> A: Apply;
 @group(0) @binding(8) var<storage, read_write> curU: array<f32>;
+// When each muscle voxel is switched on by a conduction sweep, in ms after the sweep begins (one value per muscle voxel,
+// in the order of the muscle list); a huge number (1e30) for voxels the sweep never reaches.
+@group(0) @binding(10) var<storage, read> sweepTimes: array<f32>;
 
 // mode 0: add one step of a stimulus current (u += add) to the muscle voxels inside a ball.
 // mode 1: shock, every muscle voxel back to rest.
+// mode 2: like mode 0, but only the inner wall (tissue 1) inside the ball. It stands in for the heart's fast conduction
+//         fibres, which switch the whole inner surface of the ventricles on within a few milliseconds.
+// mode 3: a step of a conduction sweep: the voxels whose activation time (sweepTimes) falls in [p0, p1) ms get the stimulus.
 @compute @workgroup_size(64)
 fn apply(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (gid.x >= A.count) { return; }
@@ -163,6 +169,12 @@ fn apply(@builtin(global_invocation_id) gid: vec3<u32>) {
     gates[idx] = vec4<f32>(1.0, 1.0, 0.0, 0.0);
     return;
   }
+  if (A.mode == 3u) {
+    let t = sweepTimes[gid.x];
+    if (t >= A.p0 && t < A.p1) { curU[idx] = curU[idx] + A.add; }
+    return;
+  }
+  if (A.mode == 2u && tissueOf(cells[idx]) != 1u) { return; }
   let x = idx % A.sx;
   let y = (idx / A.sx) % A.sy;
   let z = idx / (A.sx * A.sy);

@@ -1,82 +1,126 @@
-/* The recorded-ECG comparison panel. It takes its colours from the page's own variables when the page has them. */
+/* The recorded-ECG comparison: two lanes (the simulation over a real recording) and the notes under them. It takes its
+   colours from the page's variables when the page has them, and stacks the lanes when its container is narrow. */
 .acl-compare,
 .acl-compare * {
   box-sizing: border-box;
 }
 
 .acl-compare {
+  container-type: inline-size;
   display: grid;
-  gap: 12px;
-  color: var(--text, #e8f2f6);
+  gap: 0;
+  color: var(--text, #eef4f7);
   font-family: var(--sans, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif);
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.45;
 }
 
-.acl-compare__samples {
+.acl-compare__lane {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  min-height: var(--lane-h, 96px);
+  border-bottom: 1px solid var(--hairline, rgba(255, 255, 255, 0.08));
 }
 
-.acl-compare__sample {
-  flex: 1 1 180px;
+.acl-compare__meta {
+  flex: none;
+  width: var(--lane-meta-w, 250px);
+  padding: 12px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
   min-width: 0;
-  padding: 8px 12px;
-  text-align: left;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid var(--line-strong, rgba(120, 205, 225, 0.34));
-  border-radius: 10px;
 }
 
-.acl-compare__sample:hover {
-  background: rgba(255, 255, 255, 0.07);
+.acl-compare__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text, #eef4f7);
 }
 
-/* The chosen recording is marked in amber, the colour its trace is drawn in. */
-.acl-compare__sample[aria-pressed="true"] {
-  background: rgba(255, 180, 84, 0.12);
-  border-color: var(--warm, #ffb454);
-  box-shadow: inset 0 0 0 1px var(--warm, #ffb454);
-}
-
-.acl-compare__sample:focus-visible {
-  outline: 2px solid var(--accent, #57e0ff);
-  outline-offset: 2px;
-}
-
-.acl-compare__name {
-  display: block;
-  font-weight: 650;
-}
-
-.acl-compare__desc {
-  display: block;
+.acl-compare__sub {
   font-size: 12.5px;
-  color: var(--muted, #93aab4);
+  line-height: 1.4;
+  color: var(--muted, #a3b5be);
 }
 
-.acl-compare__plots {
-  display: grid;
-  gap: 8px;
+.acl-compare__plot {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: var(--lane-h, 96px);
 }
 
 .acl-compare__canvas {
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
-  height: auto;
-  /* 5 s at 25 mm/s is 125 mm wide, and the 5 mV shown at 10 mm/mV is 50 mm tall */
-  aspect-ratio: 5 / 2;
-  /* no border: the picture is drawn at exactly this size, and the frame is drawn inside it */
-  border-radius: 8px;
+  height: 100%;
+}
+
+.acl-compare__pick {
+  position: relative;
+  display: block;
+}
+
+.acl-compare__sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.acl-compare__select {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 34px 0 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 181, 71, 0.55);
+  background: rgba(255, 181, 71, 0.1);
+  color: #ffd591;
+  font: 600 13px var(--sans, system-ui, sans-serif);
+  cursor: pointer;
+}
+
+.acl-compare__select option {
+  color: #eef4f7;
+  background: #0b1318;
+}
+
+.acl-compare__select:focus-visible {
+  outline: 2px solid var(--accent, #63e8ff);
+  outline-offset: 2px;
+}
+
+.acl-compare__chevron {
+  position: absolute;
+  right: 13px;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  margin-top: -6px;
+  border-right: 2px solid #ffd591;
+  border-bottom: 2px solid #ffd591;
+  transform: rotate(45deg);
+  pointer-events: none;
 }
 
 .acl-compare__text {
   display: grid;
-  gap: 6px;
+  gap: 2px;
+  padding: 10px 20px 10px;
+}
+
+.acl-compare__about,
+.acl-compare__source {
+  display: grid;
+  gap: 2px;
+  align-content: start;
 }
 
 .acl-compare__text p {
@@ -84,13 +128,59 @@
 }
 
 .acl-compare__caption {
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 600;
+  color: var(--text-2, #c9d6dc);
 }
 
-.acl-compare__record,
 .acl-compare__scale,
+.acl-compare__note,
+.acl-compare__caveat,
+.acl-compare__record,
+.acl-compare__rec-caption,
 .acl-compare__credit {
   font-size: 12.5px;
-  color: var(--muted, #93aab4);
+  color: var(--muted, #a3b5be);
+}
+
+/* How this model's rhythm differs from real recordings of it, and what the recording is: said plainly, a shade brighter. */
+.acl-compare__caveat,
+.acl-compare__rec-caption {
+  color: var(--text-2, #c9d6dc);
+}
+
+/* A wide panel sets its notes in two columns: what the picture is on the left, where the recording comes from on the right. */
+@container (min-width: 1100px) {
+  .acl-compare__text {
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+    column-gap: 28px;
+  }
+  .acl-compare__source {
+    text-align: right;
+  }
+}
+
+@media (pointer: coarse) {
+  .acl-compare__select {
+    min-height: 44px;
+  }
+}
+
+/* A narrow container (a phone): each lane's words go above its trace. */
+@container (max-width: 560px) {
+  .acl-compare__lane {
+    flex-direction: column;
+    min-height: 0;
+  }
+  .acl-compare__meta {
+    width: auto;
+    padding: 10px 14px 8px;
+  }
+  .acl-compare__plot {
+    flex: none;
+    height: var(--lane-h-narrow, 88px);
+  }
+  .acl-compare__text {
+    padding: 10px 14px 12px;
+  }
 }

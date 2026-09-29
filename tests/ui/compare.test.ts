@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { parseEcgSamples, COMPARE_CAPTION, COMPARE_CREDIT } from "../../src/ui/compare";
+import { parseEcgSamples, leadInWords, COMPARE_CAPTION, COMPARE_CREDIT } from "../../src/ui/compare";
 
 const sample = (over: Record<string, unknown> = {}) => ({
   id: "normal-sinus",
@@ -71,6 +71,13 @@ describe("parseEcgSamples", () => {
     expect(() => parseEcgSamples(input)).toThrow(message);
   });
 
+  it("keeps a recording's caption when it has one, and leaves out an empty or odd one", () => {
+    const data = parseEcgSamples(file({ samples: [sample({ caption: "Lead II. Common, and different from VF." }), sample({ id: "b", caption: "  " }), sample({ id: "c", caption: 7 })] }));
+    expect(data.samples[0].caption).toBe("Lead II. Common, and different from VF.");
+    expect("caption" in data.samples[1]).toBe(false);
+    expect("caption" in data.samples[2]).toBe(false);
+  });
+
   it("does not modify its input", () => {
     const input = file();
     const before = JSON.stringify(input);
@@ -84,6 +91,15 @@ describe("the fixed panel text", () => {
     expect(COMPARE_CAPTION).toBe(
       "Recorded ECGs are shown for visual comparison only. This is an educational simulation, not a medical device and not a diagnostic tool.",
     );
-    expect(COMPARE_CREDIT).toBe("Recorded ECGs: PTB-XL, CC BY 4.0; MIT-BIH Arrhythmia Database, ODC-By 1.0.");
+    // every database a shipped recording comes from (public/data/ecg-samples.json), with its licence
+    expect(COMPARE_CREDIT).toBe("Recorded ECGs: PTB-XL, CC BY 4.0; MIT-BIH Arrhythmia Database and CU Ventricular Tachyarrhythmia Database, ODC-By 1.0.");
+  });
+});
+
+describe("a recording's lead in words", () => {
+  it("spells out MIT-BIH's modified lead II and says when a recording does not name its lead", () => {
+    expect(leadInWords("II")).toBe("lead II");
+    expect(leadInWords("MLII")).toBe("modified lead II");
+    expect(leadInWords("unspecified")).toBe("lead not stated");
   });
 });

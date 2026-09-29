@@ -168,4 +168,71 @@ describe("single-lead layout", () => {
   it("keeps the same gain as the twelve-lead layout, so amplitudes match between modes", () => {
     expect(single(1200, 700).pxPerMm).toBe(twelve(1200, 700).pxPerMm);
   });
+
+  it("draws a short strip at 3 px per mm, so the one big lead stays readable in a low dock", () => {
+    expect(single(1300, 92).pxPerMm).toBe(3);
+  });
+});
+
+describe("the strip's lead", () => {
+  it("is lead II unless another is asked for, in both layouts", () => {
+    expect(single().boxes[0].lead).toBe(1);
+    expect(twelve().boxes.find((b) => b.kind === "strip")?.lead).toBe(1);
+  });
+
+  it("follows stripLead in the single box and the twelve-lead rhythm strip, and names it", () => {
+    const one = computeLayout({ mode: "single", width: 390, height: 260, dpr: 1, windowMs: 6000, stripLead: 7 });
+    expect(one?.boxes[0]).toMatchObject({ lead: 7, label: "V2", kind: "single" });
+    const all = computeLayout({ mode: "twelve", width: 1200, height: 700, dpr: 1, windowMs: 6000, stripLead: 6 });
+    const strip = all?.boxes.find((b) => b.kind === "strip");
+    expect(strip).toMatchObject({ lead: 6, label: "V1" });
+    // the twelve small boxes keep their own leads
+    expect(all?.boxes.filter((b) => b.kind === "cell").map((b) => b.lead).sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+  });
+
+  it("refuses a lead that does not exist", () => {
+    expect(() => computeLayout({ mode: "single", width: 390, height: 260, dpr: 1, windowMs: 6000, stripLead: 12 })).toThrow(/stripLead/);
+    expect(() => computeLayout({ mode: "single", width: 390, height: 260, dpr: 1, windowMs: 6000, stripLead: 1.5 })).toThrow(/stripLead/);
+  });
+});
+
+describe("gains by lead group", () => {
+  const withGains = (mode: "twelve" | "single", gains: { limb?: number; chest?: number }, stripLead = 1) =>
+    computeLayout({ mode, width: 1200, height: 700, dpr: 1, windowMs: 6000, stripLead, gains })!;
+
+  it("starts every box at the mode's standard gain", () => {
+    for (const b of twelve().boxes) expect(b.gainMmPerMv).toBe(5);
+    expect(single().boxes[0].gainMmPerMv).toBe(10);
+    expect(twelve().groupGains).toEqual({ limb: 5, chest: 5 });
+  });
+
+  it("draws the chest leads at their own gain, and the rhythm strip at its lead's", () => {
+    const l = withGains("twelve", { chest: 2.5 });
+    for (const b of l.boxes) {
+      const chest = b.lead >= 6;
+      expect(b.gainMmPerMv, b.id).toBe(chest ? 2.5 : 5);
+      expect(b.pxPerMv, b.id).toBe(b.gainMmPerMv * l.pxPerMm);
+    }
+    expect(l.groupGains).toEqual({ limb: 5, chest: 2.5 });
+    // the layout's own gain is the limb leads'
+    expect(l.gainMmPerMv).toBe(5);
+    const onChest = withGains("twelve", { chest: 2.5 }, 8);
+    expect(onChest.boxes.find((b) => b.kind === "strip")?.gainMmPerMv).toBe(2.5);
+  });
+
+  it("gives the single box its lead's gain", () => {
+    expect(withGains("single", { chest: 5 }, 7).boxes[0].gainMmPerMv).toBe(5);
+    expect(withGains("single", { chest: 5 }, 1).boxes[0].gainMmPerMv).toBe(10);
+    expect(withGains("single", { chest: 5 }, 7).gainMmPerMv).toBe(5);
+  });
+
+  it("refuses a gain that is not a positive number", () => {
+    expect(() => withGains("twelve", { chest: 0 })).toThrow(/gain/);
+    expect(() => withGains("twelve", { limb: Number.NaN })).toThrow(/gain/);
+  });
+
+  it("puts the zero line in the middle of the single box for any lead but lead II, which is mostly upright", () => {
+    const b = withGains("single", {}, 8).boxes[0];
+    expect(Math.abs(b.baseline - (b.y + b.h / 2))).toBeLessThanOrEqual(1);
+  });
 });
