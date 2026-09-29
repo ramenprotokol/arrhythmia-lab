@@ -5,7 +5,7 @@ import "@fontsource/instrument-sans/latin-700.css";
 import "@fontsource/instrument-serif/latin-400.css";
 import "@fontsource/jetbrains-mono/latin-700.css";
 import "./style.css";
-import { showFallback } from "./fallback";
+import { showFallback, showStartupFailure } from "./fallback";
 
 export async function hasWebGPU(): Promise<boolean> {
   if (!("gpu" in navigator)) return false;
@@ -29,7 +29,7 @@ async function boot(): Promise<void> {
     await startApp(root);
   } catch (err) {
     console.error(err);
-    showFallback(root, err instanceof Error ? err.message : String(err));
+    showStartupFailure(root, err);
   }
 }
 

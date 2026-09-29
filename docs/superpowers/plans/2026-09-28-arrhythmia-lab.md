@@ -19,7 +19,7 @@
 - Credits, visible in the app: "Heart geometry: Strocchi et al., CC BY 4.0." and "Recorded ECGs: PTB-XL, CC BY 4.0."
 - Model equations are implemented from the published papers (Bueno-Orovio, Cherry, Fenton 2008, J Theor Biol 253:544) and cited. No GPL code is copied (do not port ECGSYN).
 - All authored by Claude Sonnet 5.5. Subagents must run on Sonnet 5.5. Maximum 3 subagents at once.
-- Nothing private in the repo: no personal names, no private folder paths, no AI session or thread IDs. Run `~/RamenProtocol/_ops/infra/privacy-check.sh` before every push.
+- Nothing private in the repo: no personal names, no private folder paths, no AI session or thread IDs. Run the privacy check script (`~/path/to/privacy-check.sh`) before every push.
 - Cloudflare Pages limits: at most 20,000 files, at most 25 MiB per file. Target well under 10 MiB of data in total.
 - Commits: identity is already ramenprotokol. End each commit message with `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`.
 - Receipts: append one line per task to `docs/receipts.md` (task, start time, end time, subagent used or not). These back the public "designed, built and tested by Sonnet 5.5" claim.
@@ -300,7 +300,7 @@ describe("BOCF cell", () => {
 ### Task 15: README, privacy gate, deploy
 
 - [ ] **Step 1:** `README.md`: what it is, the safety framing, how it works in plain English, how to run, data sources and licences, the model paper citations, the honest limits ("idealised tissue, qualitative ECG"), and the credit line. No private info, no session IDs.
-- [ ] **Step 2:** Run `~/RamenProtocol/_ops/infra/privacy-check.sh`. Expected: PASS. Fix anything it reports.
+- [ ] **Step 2:** Run `~/path/to/privacy-check.sh`. Expected: PASS. Fix anything it reports.
 - [ ] **Step 3:** Create the GitHub repo as ramenprotokol, set description, homepage and topics (`webgpu cardiology ecg simulation medical-education spiral-waves wgsl typescript ai-assisted-development cloudflare-pages`), then push.
-- [ ] **Step 4:** Deploy: `~/RamenProtocol/_ops/infra/ramen-deploy.sh pages dist --project-name arrhythmia-lab --branch main`. Open the live URL in a real browser and repeat the Task 14 Step 3 checks on the live site.
+- [ ] **Step 4:** Deploy: `~/path/to/deploy.sh pages dist --project-name arrhythmia-lab --branch main`. Open the live URL in a real browser and repeat the Task 14 Step 3 checks on the live site.
 - [ ] **Step 5:** Commit any fixes. Report the live URL, total build time from `docs/receipts.md`, and any gaps.

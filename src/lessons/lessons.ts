@@ -265,7 +265,8 @@ const racing: Lesson = {
         "so it could only go one way round.",
     },
     waitForShock(
-      "Doctors call this ventricular tachycardia (VT), a racing rhythm from the lower chambers. In a person it is an emergency. Press Shock to stop it.",
+      "Doctors call this ventricular tachycardia (VT), a racing rhythm from the lower chambers. In a person it is an emergency. Press Shock to stop it. " +
+        "In real life, a bystander shocks only a collapsed person.",
       "Press the Shock button to stop the racing rhythm. This step waits for you.",
     ),
     {
@@ -316,7 +317,7 @@ const fibrillation: Lesson = {
       title: "What you learned",
       text:
         "Very short waves can shatter into ventricular fibrillation, and the heart stops pumping. " +
-        "In real life: call emergency services, start CPR (chest compressions), and use an AED, a public defibrillator.",
+        "If someone collapses and is not breathing normally: call emergency services, start CPR (chest compressions), and use an AED, a public defibrillator.",
     },
   ],
 };

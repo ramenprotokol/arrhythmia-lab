@@ -53,6 +53,10 @@ export const UI_TEXT = {
   recording: "REC",
   savedClip: "Saved the clip to your downloads.",
   stepOf: "Step {n} of {total}",
+  /** The page for a lab that could not start (a file would not load, the graphics card refused something). That is not the same as a browser without WebGPU. */
+  startFailedTitle: "Arrhythmia Lab could not start",
+  startFailed: "Something went wrong while starting the lab, so it cannot run right now. Reload the page to try again. If it keeps happening, check your connection or try another browser.",
+  startFailedReason: "What went wrong: {reason}",
 } as const;
 
 /** Put values into a "{name}" template. */

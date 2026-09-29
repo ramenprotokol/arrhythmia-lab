@@ -118,6 +118,11 @@ const median = (values: number[]): number => {
   return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 };
 
+const allFinite = (values: ArrayLike<number>): boolean => {
+  for (let k = 0; k < values.length; k++) if (!Number.isFinite(values[k])) return false;
+  return true;
+};
+
 export class RhythmAnalyzer {
   private prev: Float64Array | null = null;
   private readonly smooth = new Float64Array(SMOOTH_SAMPLES);
@@ -191,9 +196,9 @@ export class RhythmAnalyzer {
     this.publish({ kind: "quiet", bpm: null, output: 0, sinceMs: tMs });
   }
 
-  /** The share of muscle that is switched on (0 to 1) at simulated time tMs. Call once per frame. */
+  /** The share of muscle that is switched on (0 to 1) at simulated time tMs. Call once per frame. A value that is not a number is skipped. */
   pushFraction(tMs: number, fraction: number): void {
-    if (tMs <= this.blankUntilMs) return;
+    if (!Number.isFinite(tMs) || !Number.isFinite(fraction) || tMs <= this.blankUntilMs) return;
     this.fractions.push({ t: tMs, f: fraction });
     while (this.fractions.length > 0 && tMs - this.fractions[0].t > WINDOW_MS) this.fractions.shift();
     if (this.secondArmed) {
@@ -206,8 +211,12 @@ export class RhythmAnalyzer {
     }
   }
 
-  /** One 12-lead ECG sample (millivolts) taken at simulated time tMs. Call in time order. */
+  /**
+   * One 12-lead ECG sample (millivolts) taken at simulated time tMs. Call in time order. A sample with a NaN or an infinity
+   * in it (a bad readback) is skipped whole: taken in, it would sit in the running sums and the envelope for good.
+   */
   push(tMs: number, leads: ArrayLike<number>): void {
+    if (!Number.isFinite(tMs) || !allFinite(leads)) return;
     const steep = this.steepness(leads);
     if (tMs <= this.blankUntilMs) {
       this.lastSampleMs = tMs;

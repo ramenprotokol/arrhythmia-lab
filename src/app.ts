@@ -10,7 +10,7 @@ import { Renderer } from "./render/Renderer";
 import type { QualityName } from "./render/quality";
 import { Monitor } from "./ui/monitor";
 import { ComparePanel, parseEcgSamples } from "./ui/compare";
-import { ClipRecorder, attachRecordButton, createComposite } from "./ui/recorder";
+import { ClipRecorder, attachRecordButton, clipSecondsFromQuery, createComposite } from "./ui/recorder";
 import { NO_RATE, statusView, type StatusView } from "./ui/status";
 import { Coach } from "./ui/coach";
 import { UI_TEXT, fill } from "./ui/text";
@@ -22,7 +22,8 @@ import { LabMoves, type ShockResult } from "./lab/moves";
 import { BLANK_AFTER_DEFIBRILLATION_MS, RhythmAnalyzer } from "./audio/rhythm";
 import { HeartAudio, soundPreference } from "./audio/heartAudio";
 import { ANATOMY_LABELS, DISCLAIMER, LEAD_CAPTIONS, SHOCK_REFUSAL, SIM_ECG_NOTES, TOASTS, type RhythmKey } from "./copy";
-import { buildDom, type EcgView } from "./dom";
+import { buildDom, type Dom, type EcgView } from "./dom";
+import { NoWebGpuError } from "./fallback";
 
 const MAX_CHUNKS_PER_FRAME = 8;
 const SPEEDS = { slow: 0.25, medium: 0.5, real: 1 } as const;
@@ -79,8 +80,19 @@ export async function startApp(root: HTMLElement): Promise<void> {
   ui.setLoading("Loading the heart");
 
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
-  if (!adapter) throw new Error("no graphics adapter");
+  if (!adapter) throw new NoWebGpuError();
   const device = await adapter.requestDevice();
+  try {
+    await startLab(ui, device);
+  } catch (err) {
+    // The start failed, so nothing is left running that could use the device: give the graphics card its memory back.
+    device.destroy();
+    throw err;
+  }
+}
+
+/** Everything that happens once there is a graphics device. Throws if any part of the start fails. */
+async function startLab(ui: Dom, device: GPUDevice): Promise<void> {
   let deviceLost = false;
   const debug = new URLSearchParams(location.search).has("debug");
   if (debug) {
@@ -89,6 +101,7 @@ export async function startApp(root: HTMLElement): Promise<void> {
     device.addEventListener("uncapturederror", (e) => errors.push((e as GPUUncapturedErrorEvent).error.message));
   }
   void device.lost.then((info) => {
+    if (info.reason === "destroyed") return; // on purpose, after a start that failed: not a fault to report
     deviceLost = true;
     ui.showError("The graphics card stopped responding", `${info.message || info.reason}. Reload the page to start again.`);
   });
@@ -96,7 +109,12 @@ export async function startApp(root: HTMLElement): Promise<void> {
   const surfaceLoaded = loadSurface(url(`data/heart-surface.bin?v=${DATA_VERSION}`));
   // The atria, great vessels, fat and coronary vessels (drawn, not simulated), fetched with the rest of the data as soon
   // as the surface says how many points they hang on. Without them the ventricles are drawn alone.
-  const anatomyLoaded = surfaceLoaded.then((s) => loadAnatomy(url(`data/heart-anatomy.bin?v=${DATA_VERSION}`), s.positions.length / 3)).catch(() => undefined);
+  const anatomyLoaded = surfaceLoaded.then((s) =>
+    loadAnatomy(url(`data/heart-anatomy.bin?v=${DATA_VERSION}`), s.positions.length / 3).catch((err: unknown) => {
+      console.warn("The atria and vessels could not be loaded, so the ventricles are drawn alone.", err);
+      return undefined;
+    }),
+  );
   const [grid, surface, frame, samplesJson, anatomy] = await Promise.all([
     loadHeart(url("data/heart.bin")),
     surfaceLoaded,
@@ -605,7 +623,7 @@ export async function startApp(root: HTMLElement): Promise<void> {
   // A WebGPU canvas only holds its picture during the frame it was drawn in, so the composite's own loop would copy
   // a blank heart. Stop it, and copy by hand right after rendering, only while a clip is being recorded.
   // Visitors get 30 seconds; the tool that records the demo clip can ask for longer with ?clipSeconds= (at most 2 minutes).
-  const maxClipSeconds = Math.min(120, Number(new URLSearchParams(location.search).get("clipSeconds")) || 30);
+  const maxClipSeconds = clipSecondsFromQuery(location.search);
   // The heartbeat is recorded with the picture. Clicking Record makes the audio path (silent while the sound is off), so a
   // person who turns the sound on part way through the clip gets it too.
   const clipRecorder = new ClipRecorder(composite.canvas, {

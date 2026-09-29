@@ -19,8 +19,11 @@ const segment = (name: string): Segment => {
   return s;
 };
 
-/** Feed a segment to a fresh analyser the way the page does: fractions and samples in time order, and a reset when the shock happens. */
-function run(seg: Segment) {
+/**
+ * Feed a segment to a fresh analyser the way the page does: fractions and samples in time order, and a reset when the shock happens.
+ * `tamper` may swap what one sample or one fraction reads as (a bad readback), to see what the analyser does with it.
+ */
+function run(seg: Segment, tamper: { sample?: (index: number, tMs: number, leads: number[]) => [number, number[]]; fraction?: (index: number, value: number) => number } = {}) {
   const analyser = new RhythmAnalyzer();
   const beats: BeatEvent[] = [];
   const seconds: SecondSoundEvent[] = [];
@@ -31,7 +34,7 @@ function run(seg: Segment) {
   const readings: { t: number; state: RhythmState }[] = [];
   let f = 0;
   let shocked = seg.shockAtMs === null;
-  for (const row of seg.ecg) {
+  for (const [index, row] of seg.ecg.entries()) {
     const t = row[0];
     // The page resets a few samples before the shock's own samples arrive: the readback lags the click.
     if (!shocked && seg.shockAtMs !== null && t >= seg.shockAtMs - 20) {
@@ -39,10 +42,12 @@ function run(seg: Segment) {
       shocked = true;
     }
     while (f < seg.fractions.length && seg.fractions[f][0] <= t) {
-      analyser.pushFraction(seg.fractions[f][0], seg.fractions[f][1]);
+      analyser.pushFraction(seg.fractions[f][0], tamper.fraction ? tamper.fraction(f, seg.fractions[f][1]) : seg.fractions[f][1]);
       f++;
     }
-    analyser.push(t, row.slice(1).map((v) => v / fixture.scale));
+    const leads = row.slice(1).map((v) => v / fixture.scale);
+    const [sampleT, sampleLeads] = tamper.sample ? tamper.sample(index, t, leads) : [t, leads];
+    analyser.push(sampleT, sampleLeads);
     readings.push({ t, state: analyser.state });
   }
   const at = (t: number): RhythmState => readings.reduce((best, r) => (r.t <= t ? r : best), readings[0]).state;
@@ -226,6 +231,47 @@ describe("reset", () => {
 
   it("starts out quiet", () => {
     expect(new RhythmAnalyzer().state.kind).toBe("quiet");
+  });
+});
+
+// The samples are read back from the graphics card. One bad one (a NaN or an infinity) must be skipped: taken in, it would
+// sit in the running sums and in the memory of "the biggest recent burst" for good, and no beat would be found again
+// until the next shock cleared them.
+describe("a bad sample from the graphics card", () => {
+  const seg = segment("sinus");
+  const clean = run(seg);
+  const bad = seg.ecg.findIndex((row) => row[0] >= 1500); // between two beats
+  type Tamper = Parameters<typeof run>[1];
+  const cases: [string, Tamper][] = [
+    ["one lead is NaN", { sample: (i, t, leads) => [t, i === bad ? leads.map((v, k) => (k === 3 ? Number.NaN : v)) : leads] }],
+    ["every lead is NaN", { sample: (i, t, leads) => [t, i === bad ? leads.map(() => Number.NaN) : leads] }],
+    ["a lead is infinite", { sample: (i, t, leads) => [t, i === bad ? leads.map((v, k) => (k === 0 ? Infinity : v)) : leads] }],
+    ["its time is NaN", { sample: (i, t, leads) => [i === bad ? Number.NaN : t, leads] }],
+  ];
+
+  for (const [name, tamper] of cases) {
+    describe(`when ${name} in one sample`, () => {
+      const r = run(seg, tamper);
+
+      it("still finds every beat where it found it before, and no others", () => {
+        expect(r.beats.length).toBe(clean.beats.length);
+        r.beats.forEach((b, i) => expect(Math.abs(b.tMs - clean.beats[i].tMs), `beat ${i}`).toBeLessThanOrEqual(8));
+      });
+
+      it("keeps reading steady, about 75 a minute, pumping, with real numbers", () => {
+        const s = r.at(4400);
+        expect(s.kind).toBe("steady");
+        expect(s.bpm).toBeGreaterThan(73);
+        expect(s.bpm).toBeLessThan(77);
+        expect(s.output).toBeGreaterThan(0.9);
+      });
+    });
+  }
+
+  it("also skips a share of the muscle that is not a number: the racing rhythm is still called racing", () => {
+    const racing = segment("racing, then a shock");
+    const r = run(racing, { fraction: (i, v) => (i % 4 === 0 ? Number.NaN : v) });
+    expect(r.at(37800).kind).toBe("racing");
   });
 });
 

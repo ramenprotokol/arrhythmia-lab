@@ -1,7 +1,7 @@
 # Build receipts
 
 Backs the README's "Who built it". Round 1 (one day, Claude Sonnet 5.5 with Sonnet helpers) comes first; round 2 (Sonnet 5.5 leading three Opus 5.5
-specialist agents) is at the end. One line per task.
+specialist agents) follows; round 3 (fixes from an independent review) is at the end. One line per task.
 
 ## Who did what (read this first)
 
@@ -153,3 +153,44 @@ work out what is wrong and fix it. The person also asked to judge the product on
   Chrome on a real GPU in 6.6 minutes with 0 failures (7 more are build and tuning tools that run only on
   request), `npm audit` 0 vulnerabilities and every package signature verified, the built site checked under its real security
   headers (no policy violation, no GPU error, no console message), the privacy gate passed.
+
+## Round 3 (2026-09-29): fixes from an independent review
+
+### Who did what in round 3
+
+- **Review (Claude Fable 5.1, read only):** read the source, the security headers, the tests and the tools at commit 2b17e7f and changed nothing. Nothing above Low.
+  Six Low findings (F1 to F6), notes on the headers and on two medical-wording points, and two files with a local path in them.
+- **Fixes (a helper running Sonnet 5.5):** every finding, each bug with a test, in the working tree only. It committed, pushed and deployed nothing.
+- **Checks and review (the lead session):** read the code changes, re-ran typecheck, lint, the unit tests and the build, and re-ran every page test against
+  the built site served with its real security headers.
+
+### What changed
+
+- F1: `?clipSeconds=` is read by `clipSecondsFromQuery` (`src/ui/recorder.ts`): a number is kept between 1 and 120, anything that is not a number gives 30.
+  `-1` used to stop the whole page starting. (`0` now gives 1 second; it used to fall through to 30.)
+- F2: only a missing graphics adapter gets the "needs WebGPU" page. Any other failure to start says the lab could not start, and why (cut at 200
+  characters, escaped). A failed start lets the graphics device go. A failing `requestDevice()` counts as "could not start", not "no WebGPU".
+- F3: the rhythm analyser skips a sample or a muscle share that is not a finite number. A single NaN used to leave its running totals wrong for good.
+- F4: `MediaRecorder.start()` is inside the try, so a start that throws stops the capture tracks and the frame source.
+- F5: a click on the record button while a stopped take's clip is still being written is ignored. It used to start a new take just as the button went back to "Record clip".
+- F6: `tools/fetch_heart.sh` checks the download's md5 before it unpacks anything (built in for `23.tar.gz`; `HEART_MD5` for another archive) and stops on a mismatch.
+  The test runs the real script with a stand-in for curl, so nothing is downloaded.
+- Wording: the fibrillation card, the first-run "Fix it" step, the racing-rhythm lesson and the fibrillation lesson's recap now say that in real life
+  the shock, CPR and the AED are for someone who has collapsed and is not breathing normally (or, for a bystander, only a collapsed person). The glossary
+  defines "Pacemaker" as both the heart's own (the sinus node) and the implanted device.
+- Headers: `Strict-Transport-Security: max-age=31536000` (this address only) and `Cross-Origin-Resource-Policy: same-origin` were added. `data:`, `blob:` and
+  `worker-src` were taken out of the content policy: the built site uses none of them (no `data:` URL, no worker; the clip download is a link to a blob, which
+  no directive governs). A test reads `public/_headers` and pins this.
+- A missing atria-and-vessels file is logged as a warning; the lab still starts with the ventricles alone.
+- Two files no longer carry a local path: `.dev.vars.example` and the plan under `docs/`.
+- The contrast test decoded a screenshot with an `<img>` on a `data:` URL, which the tightened policy blocks; it now uses `createImageBitmap` from a Blob.
+  Without that change `npm run test:live` would have failed after the deploy.
+
+### Checks
+
+- Typecheck 0 errors, lint clean, 464 unit tests in 37 files (was 421 in 33), build ok (266 KB of code, 88 KB compressed).
+- Browser tests: 176 passed, 7 skipped (build and tuning tools that run only on request), 0 failed (was 169), run by the helper.
+- The 42 page tests in `tests/app`, re-run by the lead session in real Chrome against the built site served with the headers from `public/_headers`:
+  42 passed in 3.7 minutes, no policy violation and no console error.
+- Left alone on purpose: a failure after the page's resize listener is attached would leave that listener running on a page that already says the lab could not
+  start. The only known way to get there was F1.

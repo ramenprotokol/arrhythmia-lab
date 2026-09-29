@@ -120,8 +120,8 @@ Measured on one Apple-silicon Mac, with nothing else using the graphics card. Ot
 | Fibrillation | about 5 separate wavefronts on average, up to 11 at once, about a fifth of the muscle firing |
 | Shock | ended both rhythms in every test run, and in 10 of 10 shocks in a five-cycle break-and-fix run with the sound on |
 | Sound | synthesised in the browser, no audio files; the analyser that drives it is tested on ECG recorded from the simulation |
-| Shipped | 10 MB of data (a 1.6 MB demo clip among it), 264 KB of code (87 KB compressed), no server |
-| Tests | 421 unit tests and 169 browser tests in real Chrome on a real GPU, all passing (7 more are build and tuning tools that run only on request); the page tests also pass against the live site |
+| Shipped | 10 MB of data (a 1.6 MB demo clip among it), 266 KB of code (88 KB compressed), no server |
+| Tests | 464 unit tests and 176 browser tests in real Chrome on a real GPU, all passing (7 more are build and tuning tools that run only on request); the page tests also pass against the live site |
 
 The browser tests need a real graphics card, and one of them measures speed, so run them one at a time (the config does) and
 with nothing else busy on the GPU.
@@ -172,6 +172,11 @@ the interface was confusing, and it had no sound. The lead session (Sonnet 5.5) 
 the break-it and fix-it moves, the beat sweep, the whole-heart shock, the page wiring and the tests. Three specialist agents
 running Opus 5.5 did the rest: one rebuilt the interface, one rebuilt the renderer, and one audited the lab as a cardiology
 teacher, rewrote every word the page says about the heart, and read this README for medical accuracy.
+
+**Round 3 (29 September 2026).** Claude Fable 5.1 read the project for security and code problems without changing anything,
+and found nothing above Low: six small bugs, two suggestions for the medical wording, and some notes on the security headers.
+A helper running Sonnet 5.5 fixed all of them, with a test for every bug. The lead session then read the code changes and
+re-ran the checks, including the page tests against the built site sending its real security headers, before the fixes were kept.
 
 `docs/receipts.md` is the build log: what was done, in what order, what went wrong, and the measured numbers. This project is
 not affiliated with, endorsed by or sponsored by Anthropic.

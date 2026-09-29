@@ -171,10 +171,14 @@ describe("lessons: the data", () => {
     expect(lessonText("tachycardia")).toMatch(/fragile/);
     expect(lessonText("tachycardia")).toMatch(/one early beat/);
     expect(lessonText("tachycardia")).toMatch(/emergency/);
+    // ...and that a shock in real life is not for a person with a racing heart who is up and about
+    expect(lessonText("tachycardia")).toMatch(/In real life, a bystander shocks only a collapsed person/);
     // fibrillation: cardiac arrest, and what to do in real life
     expect(lessonText("fibrillation")).toMatch(/cardiac arrest/);
     expect(lessonText("fibrillation")).toMatch(/no pulse/);
     expect(lessonText("fibrillation")).toMatch(/call emergency services, start CPR/);
+    // ...and only for someone who has collapsed and is not breathing normally: the condition comes before the actions
+    expect(lessonText("fibrillation")).toMatch(/If someone collapses and is not breathing normally: call emergency services, start CPR/);
     expect(lessonText("fibrillation")).toMatch(/about ten a second/);
     // the shock: how it works, and when a real AED refuses
     expect(lessonText("shock")).toMatch(/every cell fire at the same moment/);
@@ -229,6 +233,24 @@ describe("the page's words (src/copy.ts): within the limits the layout and the r
 
   it("has three first-run steps: tap, break, fix", () => {
     expect(COPY.FIRST_RUN_STEPS.map((s) => s.title)).toEqual(["Tap the heart", "Break it", "Fix it"]);
+  });
+
+  it("says what to do in real life only after the condition for it: someone collapsed and not breathing normally", () => {
+    const next = COPY.RHYTHM_COPY.chaotic.next;
+    expect(next).toMatch(/^Shock now\. /);
+    const condition = next.indexOf("has collapsed and is not breathing normally");
+    expect(condition, next).toBeGreaterThan(-1);
+    for (const action of ["call emergency services", "start CPR", "use an AED"]) expect(next.indexOf(action), action).toBeGreaterThan(condition);
+  });
+
+  it("does not leave 'Press Shock' for the racing rhythm standing as if a bystander would shock anyone with a racing heart", () => {
+    expect(COPY.FIRST_RUN_STEPS[2].body).toMatch(/^Press Shock\. .*In real life, a bystander shocks only a collapsed person\.$/);
+  });
+
+  it("defines Pacemaker as both the heart's own (the sinus node) and the implanted device", () => {
+    expect(COPY.TERMS.Pacemaker).toMatch(/sinus node/);
+    expect(COPY.TERMS.Pacemaker).toMatch(/implanted device/);
+    expect(COPY.TERMS.Pacemaker).toMatch(/heart's own/);
   });
 });
 

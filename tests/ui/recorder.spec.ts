@@ -805,3 +805,92 @@ test("crop and fit keep the source's proportions: contain fits it all inside, co
   expect(r.containCrop.inside[0]).toBeGreaterThan(200);
   expect(r.containCrop.bar).toEqual([5, 10, 12]);
 });
+
+test("a MediaRecorder that will not start lets the capture go, and the recorder can be started again", async ({ page }) => {
+  await open(page);
+  const r = await page.evaluate(async () => {
+    const { ui } = window;
+    const { ClipRecorder } = await ui.loadRecorder();
+    const canvas = ui.animatedCanvas(64, 48, 40);
+    // keep the captures the recorder makes, to look at their tracks afterwards
+    const captures: MediaStream[] = [];
+    const realCapture = HTMLCanvasElement.prototype.captureStream;
+    HTMLCanvasElement.prototype.captureStream = function (this: HTMLCanvasElement, fps?: number) {
+      const stream = realCapture.call(this, fps);
+      captures.push(stream);
+      return stream;
+    };
+    const realStart = MediaRecorder.prototype.start;
+    MediaRecorder.prototype.start = () => {
+      throw new DOMException("the recorder would not start", "InvalidStateError");
+    };
+    const recorder = new ClipRecorder(canvas, { fps: 20 });
+    let failure = "no error";
+    try {
+      recorder.start();
+    } catch (e) {
+      failure = (e as Error).message;
+    }
+    MediaRecorder.prototype.start = realStart;
+    const failedTracks = captures.flatMap((s) => s.getTracks().map((t) => t.readyState));
+    const recordingAfterFailure = recorder.recording;
+    recorder.start(); // the real recorder works
+    await ui.sleep(400);
+    const clip = await recorder.stop();
+    HTMLCanvasElement.prototype.captureStream = realCapture;
+    return { failure, failedTracks, recordingAfterFailure, clipSize: clip.size };
+  });
+  expect(r.failure).toBe("the recorder would not start");
+  expect(r.failedTracks).toEqual(["ended"]); // a capture left open would keep the canvas being copied
+  expect(r.recordingAfterFailure).toBe(false);
+  expect(r.clipSize).toBeGreaterThan(0);
+});
+
+test("the record button ignores a click while the time limit's clip is being written, then saves it and says Record clip", async ({ page }) => {
+  await open(page);
+  await page.evaluate(async () => {
+    const { ui } = window;
+    const { ClipRecorder, attachRecordButton } = await ui.loadRecorder();
+    const canvas = ui.animatedCanvas(64, 48, 10);
+    document.body.append(canvas);
+    const button = document.createElement("button");
+    button.id = "rec";
+    document.body.append(button);
+    // A stopped recording is finished a moment later. Make that moment long enough to click in, and count the takes.
+    const win = window as unknown as { started: number; recorder: InstanceType<typeof ClipRecorder> };
+    win.started = 0;
+    const realStart = MediaRecorder.prototype.start;
+    MediaRecorder.prototype.start = function (this: MediaRecorder, timeslice?: number) {
+      win.started++;
+      realStart.call(this, timeslice);
+    };
+    const realStop = MediaRecorder.prototype.stop;
+    MediaRecorder.prototype.stop = function (this: MediaRecorder) {
+      window.setTimeout(() => realStop.call(this), 900);
+    };
+    win.recorder = new ClipRecorder(canvas, { fps: 20, maxSeconds: 0.6 });
+    attachRecordButton(button, win.recorder);
+  });
+  const button = page.locator("#rec");
+  const state = () => page.evaluate(() => ({ started: (window as unknown as { started: number }).started, recording: (window as unknown as { recorder: { recording: boolean } }).recorder.recording }));
+  const download = page.waitForEvent("download");
+
+  await button.click();
+  await expect(button).toHaveText("Stop and save");
+  // the limit stops the take; its last chunk is still on the way, and the button does not know yet
+  await expect.poll(async () => (await state()).recording).toBe(false);
+  await expect(button).toHaveText("Stop and save");
+
+  await button.click(); // a click in that moment is not a request for a new take
+  expect(await state()).toEqual({ started: 1, recording: false });
+
+  const file = await download; // the clip arrives, and is saved
+  expect(file.suggestedFilename()).toMatch(/\.webm$/);
+  await expect(button).toHaveText("Record clip");
+  await expect(button).toHaveAttribute("aria-pressed", "false");
+  expect(await state()).toEqual({ started: 1, recording: false });
+
+  await button.click(); // and now a click starts a take
+  await expect(button).toHaveText("Stop and save");
+  expect((await state()).started).toBe(2);
+});

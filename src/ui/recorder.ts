@@ -119,6 +119,21 @@ type Take = { recorder: MediaRecorder; done: Promise<Blob>; timer: number };
 /** Something that draws the recorded canvas, and is switched on only while a recording is going: a composite. */
 export type FrameSource = { start(): void; stop(): void };
 
+const DEFAULT_CLIP_SECONDS = 30;
+const LONGEST_CLIP_SECONDS = 120;
+
+/**
+ * How long a clip may run, from the page's address. Visitors get 30 seconds; the tool that records the demo clip can ask
+ * for 1 to 120 with `?clipSeconds=`. A number outside that is brought inside it, and anything that is not a number is
+ * ignored. (A recorder refuses a limit below zero, and a page that let the address ask for one would not start.)
+ */
+export function clipSecondsFromQuery(search: string): number {
+  const asked = new URLSearchParams(search).get("clipSeconds");
+  if (asked === null || asked.trim() === "") return DEFAULT_CLIP_SECONDS;
+  const seconds = Number(asked);
+  return Number.isNaN(seconds) ? DEFAULT_CLIP_SECONDS : Math.min(LONGEST_CLIP_SECONDS, Math.max(1, seconds));
+}
+
 export class ClipRecorder {
   private readonly fps: number;
   private readonly maxSeconds: number;
@@ -127,6 +142,8 @@ export class ClipRecorder {
   private take: Take | null = null;
   /** A clip that the time limit finished and nobody was waiting for. stop() hands it over once. */
   private pending: Promise<Blob> | null = null;
+  /** The take that was just stopped, until its clip is complete: its last chunk is still on the way. */
+  private finishing: Take | null = null;
   private readonly listeners = new Set<{ fn: (clip: Blob) => void }>();
 
   constructor(
@@ -134,7 +151,7 @@ export class ClipRecorder {
     opts: { fps?: number; maxSeconds?: number; frameSource?: FrameSource; audio?: () => MediaStream | null } = {},
   ) {
     this.fps = opts.fps ?? 30;
-    this.maxSeconds = opts.maxSeconds ?? 30;
+    this.maxSeconds = opts.maxSeconds ?? DEFAULT_CLIP_SECONDS;
     this.frameSource = opts.frameSource;
     this.audio = opts.audio;
     if (!finitePositive(this.fps)) throw new RangeError(`fps must be more than 0, got ${this.fps}`);
@@ -162,6 +179,11 @@ export class ClipRecorder {
     return this.take !== null;
   }
 
+  /** True from the moment a take is stopped, by hand or by the time limit, until its clip is complete. */
+  get saving(): boolean {
+    return this.finishing !== null;
+  }
+
   start(): void {
     if (this.take) throw new Error("Already recording. Call stop() first.");
     const reason = ClipRecorder.unsupportedReason();
@@ -177,6 +199,7 @@ export class ClipRecorder {
       const sound = this.audio?.()?.getAudioTracks().map((t) => t.clone()) ?? [];
       for (const track of sound) stream.addTrack(track);
       recorder = new MediaRecorder(stream, { mimeType: pickMimeType(sound.length > 0), videoBitsPerSecond: 4_000_000 });
+      recorder.start(250); // its events come later, so the handlers below are in place before the first
     } catch (e) {
       stream?.getTracks().forEach((t) => t.stop());
       this.frameSource?.stop();
@@ -201,7 +224,6 @@ export class ClipRecorder {
     done.catch(() => undefined); // if nobody collects a failed clip, that is not an unhandled rejection
 
     this.pending = null;
-    recorder.start(250);
     this.take = { recorder, done, timer: window.setTimeout(() => this.finishAtLimit(), this.maxSeconds * 1000) };
   }
 
@@ -217,6 +239,7 @@ export class ClipRecorder {
       throw new Error("Not recording. Call start() first.");
     }
     this.take = null;
+    this.startSaving(take);
     window.clearTimeout(take.timer);
     if (take.recorder.state !== "inactive") take.recorder.stop();
     this.frameSource?.stop();
@@ -239,6 +262,7 @@ export class ClipRecorder {
     const take = this.take;
     if (!take) return;
     this.take = null;
+    this.startSaving(take);
     if (take.recorder.state !== "inactive") take.recorder.stop();
     this.frameSource?.stop();
     if (this.listeners.size === 0) {
@@ -249,6 +273,15 @@ export class ClipRecorder {
       (clip) => [...this.listeners].forEach((l) => l.fn(clip)),
       () => undefined,
     );
+  }
+
+  /** `take` has been stopped and its clip is on its way. */
+  private startSaving(take: Take): void {
+    this.finishing = take;
+    const end = (): void => {
+      if (this.finishing === take) this.finishing = null;
+    };
+    take.done.then(end, end);
   }
 }
 
@@ -312,6 +345,9 @@ export function attachRecordButton(button: HTMLButtonElement, recorder: ClipReco
   });
   button.addEventListener("click", async () => {
     if (button.disabled) return;
+    // The time limit has stopped the take and its clip is still being written, so the button still says "Stop and save":
+    // that click is not a request for a new take, and the clip's arrival is about to put the button right.
+    if (recorder.saving && !recorder.recording) return;
     try {
       if (!recorder.recording) {
         recorder.start();

@@ -17,8 +17,12 @@ npx vitest run tests/data/heart-frame.test.ts
 ```
 
 `fetch_heart.sh` takes an archive name as its argument (`01.tar.gz` ... `24.tar.gz`) and
-checks nothing beyond HTTP success; compare the md5 with the Zenodo file list if in doubt
-(`23.tar.gz`: `880a642341f66700986dee7d58891c2d`, verified).
+checks the download's md5 before it unpacks anything; if it is wrong the script stops and
+says what it wanted and what it got. The md5 of the default archive is built in
+(`23.tar.gz`: `880a642341f66700986dee7d58891c2d`, verified). For another archive, give the md5
+from the Zenodo file list in `HEART_MD5` (`HEART_MD5=... tools/fetch_heart.sh 07.tar.gz`), or
+the script stops before it downloads anything. `tests/tools/fetch-heart.test.ts` runs the
+script against a stand-in for curl, so nothing is downloaded.
 
 ## Source data (what is really in the archive)
 

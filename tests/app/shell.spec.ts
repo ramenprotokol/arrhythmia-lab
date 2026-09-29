@@ -553,9 +553,8 @@ test.describe("contrast", () => {
     await page.waitForTimeout(1500);
     const shot = await page.screenshot();
     const rows = await page.evaluate(async (b64) => {
-      const img = new Image();
-      img.src = `data:image/png;base64,${b64}`;
-      await img.decode();
+      // (not an <img> with a data: URL: the content policy the live site sends does not allow one)
+      const img = await createImageBitmap(new Blob([Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0))], { type: "image/png" }));
       const c = document.createElement("canvas");
       c.width = img.width;
       c.height = img.height;

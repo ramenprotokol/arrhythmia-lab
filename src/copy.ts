@@ -54,7 +54,7 @@ export const RHYTHM_COPY: Record<RhythmKey, RhythmCopy> = {
     medicalName: "Ventricular fibrillation (VF)",
     sentence: "The wave has shattered into many. The muscle quivers instead of squeezing, so no blood moves. In a person: cardiac arrest.",
     pumping: "Not pumping",
-    next: "Shock now. In real life: call emergency services, start CPR, use an AED.",
+    next: "Shock now. In real life, if someone has collapsed and is not breathing normally: call emergency services, start CPR, use an AED.",
   },
   resetting: {
     name: "After the shock",
@@ -97,7 +97,7 @@ export const FIRST_RUN_STEPS: { title: string; body: string; done: string }[] = 
   },
   {
     title: "Fix it",
-    body: "Press Shock. Every cell fires at once, so the circling wave has nowhere left to go.",
+    body: "Press Shock. Every cell fires at once, so the circling wave has nowhere left to go. In real life, a bystander shocks only a collapsed person.",
     done: "Fixed. The shock stopped the circling wave; the steady beat then came back on its own. A defibrillator stops chaos, it does not start a heart.",
   },
 ];
@@ -229,7 +229,7 @@ export const TERMS: Record<string, string> = {
   AED: "A public defibrillator that checks the rhythm itself and talks you through it.",
   "Cardiac arrest": "The heart stops pumping. The person collapses and has no pulse.",
   CPR: "Pushing hard and fast on the chest to keep blood moving until help arrives.",
-  Pacemaker: "A small implanted device that fires beats when the heart's own are too slow.",
+  Pacemaker: "Two kinds: the heart's own (the sinus node), and an implanted device for slow hearts.",
   Idealised: "Simplified on purpose, not measured from a real person.",
 };
 
