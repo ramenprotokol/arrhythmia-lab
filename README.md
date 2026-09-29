@@ -16,15 +16,15 @@ turn on a heartbeat that follows whatever the heart is doing. Free, in your brow
 
 Start with the three-step card in the corner: **tap the heart, break it, fix it.**
 
-- **Break it.** Three buttons at the bottom: *Early extra beat* (harmless, and it settles by itself), *Make it race*
+- **Break it.** Three buttons at the bottom: *Early extra beat* (it settles by itself; occasional ones are common and usually harmless), *Make it race*
   (ventricular tachycardia, a wave circling the heart) and *Make it fibrillate* (ventricular fibrillation, no pumping at all).
 - **Fix it.** *Shock* works the way a defibrillator does: every cell fires at once, so a circling or chaotic wave has nowhere
-  left to go. Like a real AED it checks first: it will not shock a heart that is pumping, or one that is still, and it says why.
-  After a shock the steady beat comes back on its own.
+  left to go. Like a real AED it reads the rhythm first: it shocks only the racing rhythm or fibrillation, and refuses a steady rhythm or a
+  still heart, saying why. After a shock the steady beat comes back on its own here; in a person it does not always.
 - **Read it.** A card names the rhythm in plain words (with the medical name under it), shows the rate, how well the heart is
   pumping, one sentence about what is happening, and what to try next.
 - **Hear it.** Turn on **Sound** (or press M). Each beat is a *lub* and a *dub*, made from the simulated muscle: an early beat
-  is softer, a racing heart is a quick thump per turn, a shock is a thud, and fibrillation is silent, because a quivering heart
+  is softer, a racing heart is a quick thump per turn, a shock plays a thud and a crackle (a sound effect, not a heart sound), and fibrillation is silent, because a quivering heart
   has no beat to hear. It is synthesised live in your browser, not recorded, and off until you ask for it.
 - **See the ECG.** One big strip that picks the lead that shows the rhythm best (and says which), all 12 leads, and **Compare**,
   which puts real recorded ECGs (a normal rhythm, extra beats, ventricular tachycardia, real ventricular fibrillation, and atrial
@@ -50,9 +50,9 @@ Keys: **E** early beat, **R** race, **F** fibrillate, **S** shock, **B** one bea
    Each face's flow is worked out once and added to one cube and taken from the other, so no current is created or lost at the
    edge of the muscle. A test proves it: a sealed, unstimulated heart keeps its total voltage to within rounding error.
 4. **An ordinary beat that looks like one.** A real beat starts at the top and runs down fast wiring, so the lower chambers
-   fire almost together. This model has no top half and no fast wiring, so the lab stands in for them: it fires the inner
+   fire almost together. This model does not simulate the top half or the fast wiring, so the lab stands in for them: it fires the inner
    wall in the order a fast wave would reach it, starting in the wall between the two ventricles. The result is a narrow
-   spike (about 100 ms) and an upright T wave, like a normal ECG. A tap or an early beat starts at a single spot and creeps cell
+   QRS (about 100 ms) with an upright T wave in lead II, as in a normal ECG. A tap or an early beat starts at a single spot and creeps cell
    to cell, so it looks wide, the way a beat from a pacing wire or an early beat in the muscle does.
 5. **An ECG computed, not played back.** Each frame the lab adds up how the moving voltage would look from nine electrode
    positions on an idealised body and turns them into the twelve standard leads. It is qualitative: the shape and direction are
@@ -87,11 +87,17 @@ heart scan; the electricity is a simplified model. It is not a medical device, a
 - The ECG is computed from a simplified body model. Read its shapes as qualitative: every chest lead here points upward (in a
   person, V1 mostly points down), its chest-lead waves are taller than a typical adult's (the strip lowers its gain and says so),
   the racing rhythm is faster than most real ventricular tachycardia, and the fibrillation looks more regular than most real
-  fibrillation. Compare says so beside each real trace.
+  fibrillation. Compare notes the last two under the simulated trace.
 - The arrhythmias are what this model does at these settings. They illustrate ideas; they do not predict what would happen in a person.
 - The sounds are synthesised from the simulated beats. They are not recordings of a real heart, and the shock's thud is a sound
   effect, not something a heart does.
 - After a shock the lab also restores healthy tissue. That stands for treating the cause; in a person a shock does not heal anything.
+- Here every shock works and the steady beat always comes back. In a person a shock can fail, or the heart may not restart at
+  once, so CPR continues; every minute without CPR and a shock lowers the chance of survival.
+- It is not first-aid training. If someone collapses and is not breathing normally, call emergency services, start CPR and use
+  an AED; it reads the rhythm itself and talks you through it.
+- The heart shape comes from a research set of CT scans of people with heart failure (recruited for a pacing upgrade), so it is
+  not a textbook healthy heart, and the Fragile settings are not a model of any particular disease.
 - It needs WebGPU (Chrome, Edge, Safari 26, Chrome on Android, Firefox on Windows and Apple-silicon Macs). It has been tested in
   Chrome on a Mac only. Elsewhere you get an explanation and a recorded clip.
 
@@ -165,7 +171,7 @@ It gave no code.
 the interface was confusing, and it had no sound. The lead session (Sonnet 5.5) wrote the rhythm analyser and the heart sounds,
 the break-it and fix-it moves, the beat sweep, the whole-heart shock, the page wiring and the tests. Three specialist agents
 running Opus 5.5 did the rest: one rebuilt the interface, one rebuilt the renderer, and one audited the lab as a cardiology
-teacher and rewrote every word the page says about the heart.
+teacher, rewrote every word the page says about the heart, and read this README for medical accuracy.
 
 `docs/receipts.md` is the build log: what was done, in what order, what went wrong, and the measured numbers. This project is
 not affiliated with, endorsed by or sponsored by Anthropic.

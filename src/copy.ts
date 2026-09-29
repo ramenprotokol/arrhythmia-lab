@@ -59,7 +59,7 @@ export const RHYTHM_COPY: Record<RhythmKey, RhythmCopy> = {
   resetting: {
     name: "After the shock",
     medicalName: "Post-shock pause",
-    sentence: "The shock made every cell fire at once, so the circling waves had nowhere left to go. The steady beat returns after a pause.",
+    sentence: "Every cell fired at once, so the circling waves had nowhere left to go. Here the steady beat returns; in a person, not always.",
     pumping: "Not pumping yet",
     next: "Watch the steady beat come back. The lab also healed the tissue, which stands for treating the cause.",
   },
@@ -88,7 +88,7 @@ export const FIRST_RUN_STEPS: { title: string; body: string; done: string }[] = 
   {
     title: "Tap the heart",
     body: "Tap anywhere on the muscle to start a beat from that spot. Watch the glow spread and the ECG draw it.",
-    done: "That glow is electricity. Every squeeze of a real heart follows a wave like it.",
+    done: "That glow is electricity spreading from your tap. Every squeeze of a real heart follows an electrical wave.",
   },
   {
     title: "Break it",
@@ -98,7 +98,7 @@ export const FIRST_RUN_STEPS: { title: string; body: string; done: string }[] = 
   {
     title: "Fix it",
     body: "Press Shock. Every cell fires at once, so the circling wave has nowhere left to go.",
-    done: "Fixed. After a pause the steady beat returns. That is what a defibrillator does.",
+    done: "Fixed. The shock stopped the circling wave; the steady beat then came back on its own. A defibrillator stops chaos, it does not start a heart.",
   },
 ];
 

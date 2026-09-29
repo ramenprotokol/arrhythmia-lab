@@ -60,7 +60,7 @@ work out what is wrong and fix it. The person also asked to judge the product on
 - **Three Opus 5.5 specialist agents**, used because the person prefers Opus for subagents: **ux** (page shell, status card,
   break/fix bar, ECG dock with Compare inside it, drawers, phone layout, fonts), **visual** (the renderer: the whole heart, fat,
   coronary vessels, great vessels, thin wavefront, contraction, and its cost), **educator** (a cardiology-teaching audit of the
-  live site, every word on the page in `src/copy.ts`, the lessons, the real ventricular-fibrillation recording in Compare).
+  live site, every word on the page in `src/copy.ts`, the lessons, the real ventricular-fibrillation recording in Compare, and a last medical-accuracy read of the README and the sound rules).
 - **The Design canvas** (a private board) was used for the layout options before the interface agent built the page.
 - **The person** chose the direction, said what was wrong, and asked for the sound.
 
@@ -141,6 +141,14 @@ work out what is wrong and fix it. The person also asked to judge the product on
   lab hunts for a rhythm (now muted); a size sweep from phone to ultrawide found the ECG strip half hidden on a phone; watching
   the analyser's beats after an early tap found the false "Racing rhythm"; reading the deploy headers found the stale-data hazard;
   a mid-cycle beat fired with B was being named a PVC (it goes through the wiring, so the card stays with the steady rhythm).
+- Educator (Opus 5.5), last read: the README and the sound rules read for medical accuracy. Nothing outright wrong, and every misleading phrase was fixed:
+  an early extra beat is "usually harmless", not "harmless"; a real AED reads the rhythm and cannot tell whether a heart is pumping; "no top half" contradicted
+  the drawn upper chambers; the upright T wave belongs to lead II only; Compare notes two rhythms, under the simulated trace. Three statements were missing from
+  "What it is and is not" and were added, the most important being that here every shock works and the steady beat always comes back, while in a person a
+  shock can fail and CPR continues; the others: it is not first-aid training, and the heart comes from a heart-failure research set. On the page, the first-run
+  "Fix it" line no longer says a defibrillator restarts the heart (it stops chaos; it does not start a heart) and the after-shock card says "in a person, not always".
+  The sound rules needed no change beyond labelling the shock's thud as a sound effect. (This review reached the lead late, after the first deploy, so the fixes are a
+  second deploy.)
 - Final checks on a quiet GPU: typecheck 0 errors, lint clean, 421 unit tests in 33 files, 169 browser tests in real
   Chrome on a real GPU in 6.6 minutes with 0 failures (7 more are build and tuning tools that run only on
   request), `npm audit` 0 vulnerabilities and every package signature verified, the built site checked under its real security
